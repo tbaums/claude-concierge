@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# runtime state (not part of the repo)
+.start-fresh
+*.log
+
+# python
+__pycache__/
+*.pyc

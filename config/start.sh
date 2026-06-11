@@ -1,0 +1,56 @@
+#!/bin/zsh -l
+# ───────────────────────────────────────────────────────────────────────────
+#  Inner launcher — what runs *inside* the Claude Concierge window.
+#  Starts (or re-attaches to) a dedicated tmux server running Claude Code,
+#  auto-resuming the previous conversation so a crash/reboot picks up exactly
+#  where you left off. Uses its own socket (-L concierge) + config, so it never
+#  touches any other tmux setup.
+# ───────────────────────────────────────────────────────────────────────────
+set -e
+
+CFG="$HOME/.config/claude-concierge"
+CONF="$CFG/tmux.conf"
+SOCK="concierge"
+SESSION="concierge"
+CLAUDE="$(command -v claude || echo "$HOME/.local/bin/claude")"
+MODEL="${CONCIERGE_MODEL:-claude-fable-5}"         # default to Fable
+WORKDIR="$HOME"                                    # cwd Claude keys its transcript on
+LOGDIR="$HOME/.claude/concierge-logs"
+FRESH_SENTINEL="$CFG/.start-fresh"
+
+cd "$WORKDIR"
+
+# Where Claude Code stores this dir's structured transcript (path-sanitised cwd).
+PROJ="$HOME/.claude/projects/$(printf '%s' "$WORKDIR" | sed 's#[/.]#-#g')"
+
+T() { tmux -L "$SOCK" "$@"; }
+
+# Re-attach if a concierge session is already alive (survives window close).
+if T has-session -t "$SESSION" 2>/dev/null; then
+  exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"
+fi
+
+# Decide: resume the previous conversation, or start fresh?
+#   - `concierge --new` drops a sentinel to force a fresh conversation.
+#   - otherwise, if Claude has a stored transcript for this dir, --continue it.
+CONT=""
+if [[ -f "$FRESH_SENTINEL" ]]; then
+  rm -f "$FRESH_SENTINEL"
+elif ls "$PROJ"/*.jsonl >/dev/null 2>&1; then
+  CONT="--continue"
+fi
+
+# Default the concierge to Fable (your global default model is left untouched).
+# Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
+# If Claude exits, fall back to an interactive shell so the window persists.
+RUN="$CLAUDE $CONT --model $MODEL --dangerously-skip-permissions; exec \$SHELL"
+
+T -f "$CONF" new-session -d -s "$SESSION" "$RUN"
+
+# Durable raw-pane transcript (ANSI-stripped, dated). -o appends. Prune logs
+# older than 60 days so this stays bounded for months without attention.
+mkdir -p "$LOGDIR"
+find "$LOGDIR" -name '*.log' -type f -mtime +60 -delete 2>/dev/null || true
+T pipe-pane -o -t "$SESSION" "exec '$CFG/logsink.sh'"
+
+exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"

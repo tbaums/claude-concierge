@@ -1,0 +1,36 @@
+#!/bin/zsh
+# ───────────────────────────────────────────────────────────────────────────
+#  concierge — open a fresh "Claude Concierge" iTerm window (neon theme, fun
+#  font, badge watermark) running Claude Code inside the tuned tmux session.
+#
+#  Just say / type:  concierge
+#
+#  Flags:
+#    --new    start a brand-new conversation instead of resuming the last one
+#    --here   launch in the CURRENT terminal window (no new iTerm window / no
+#             profile theming — useful over SSH or in a plain shell)
+#
+#  By default the concierge resumes your previous conversation, so a crash or
+#  reboot picks up exactly where you left off.
+# ───────────────────────────────────────────────────────────────────────────
+
+CFG="$HOME/.config/claude-concierge"
+
+for arg in "$@"; do
+  [[ "$arg" == "--new" ]] && : > "$CFG/.start-fresh"
+done
+
+for arg in "$@"; do
+  if [[ "$arg" == "--here" ]]; then
+    exec "$CFG/start.sh"
+  fi
+done
+
+# Open a new iTerm window using the Claude Concierge profile. That profile's
+# command is start.sh, so the window comes up already running Claude.
+osascript <<'APPLESCRIPT'
+tell application "iTerm"
+  activate
+  create window with profile "Claude Concierge"
+end tell
+APPLESCRIPT
