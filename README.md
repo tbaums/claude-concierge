@@ -14,6 +14,10 @@ clipboard, buttery mouse-wheel scrolling, a persistent **CONCIERGE** banner so
 you always know which window you're in — and it **auto-resumes your last
 conversation**, so a crash or reboot picks up exactly where you left off.
 
+<p align="center">
+  <img src="docs/images/concierge-window.png" width="720" alt="The Concierge window — neon-themed iTerm2 running Claude Code in the tuned tmux session, with the persistent banner and statusline">
+</p>
+
 > Built for working by voice. Defaults to the **Fable** model and honors your
 > Claude Code voice tap-to-send setting.
 
