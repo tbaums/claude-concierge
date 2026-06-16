@@ -42,8 +42,19 @@ fi
 
 # Default the concierge to Fable (your global default model is left untouched).
 # Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
+
+# Narrow-display mode (default ON): the concierge is usually read in a terminal
+# on a small/older iPad, where wide output runs off-screen. Inject a formatting
+# instruction so the agent keeps replies narrow. Opt out with CONCIERGE_NARROW=0.
+NARROW="${CONCIERGE_NARROW:-1}"
+NARROW_FLAG=""
+if [ "$NARROW" = "1" ]; then
+  NARROW_TEXT="DISPLAY: this session is read in a terminal on a small/older iPad (narrow viewport, ~50 cols). Keep ALL output narrow: short lines (wrap prose by ~48 chars), no wide tables or box-drawing, break long shell commands across lines with backslashes, prefer short vertical bullet lists over wide rows, and do not dump long/wide code or log blocks (show only the few relevant lines). Be terse and scannable."
+  NARROW_FLAG="--append-system-prompt $(printf '%q' "$NARROW_TEXT")"
+fi
+
 # If Claude exits, fall back to an interactive shell so the window persists.
-RUN="$CLAUDE $CONT --model $MODEL --dangerously-skip-permissions; exec \$SHELL"
+RUN="$CLAUDE $CONT --model $MODEL --dangerously-skip-permissions $NARROW_FLAG; exec \$SHELL"
 
 T -f "$CONF" new-session -d -s "$SESSION" "$RUN"
 
