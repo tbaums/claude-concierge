@@ -4,8 +4,9 @@ Everything the Concierge installs lives in three places:
 
 | Path | What |
 |------|------|
-| `~/.config/claude-concierge/` | `tmux.conf`, `start.sh`, `clip.sh`, `logsink.sh` |
+| `~/.config/claude-concierge/` | `tmux.conf`, `start.sh`, `clip.sh`, `logsink.sh`, `VERSION` |
 | `~/.local/bin/concierge` | the launcher you invoke |
+| `~/.local/bin/tmux` | wrapper that defaults new tmux sessions onto the Concierge socket |
 | `~/Library/Application Support/iTerm2/DynamicProfiles/claude-concierge.json` | the themed iTerm2 profile |
 
 ## The model (defaults to Fable)
@@ -54,6 +55,33 @@ directory so the same transcript is found every time.
 - Pane transcript: `~/.claude/concierge-logs/YYYY-MM-DD.log`, ANSI-stripped,
   auto-pruned after 60 days (`find -mtime +60 -delete` on launch). Change the
   retention window in `start.sh`.
+
+## Default tmux socket for other tools
+
+`install.sh` installs a `tmux` wrapper to `~/.local/bin/tmux`, ahead of the
+real tmux on `PATH`. Any tool that spins up its own tmux session (a dev-swarm
+orchestrator, an ad-hoc dashboard, etc.) now defaults onto the **Concierge
+socket** — so `Ctrl-b + s` / `j`/`k` from any Concierge-attached client shows
+all of it, not just the Concierge session itself.
+
+The wrapper only overrides the *bare* case:
+
+- Already inside a tmux client (`$TMUX` set)? Passed through unchanged — tmux's
+  own default already resolves to that session's socket.
+- Caller explicitly passed `-L <name>` or `-S <path>`? Respected unchanged —
+  this is the "unless otherwise specified" opt-out.
+- Otherwise, `-L concierge` is injected.
+
+This requires `~/.local/bin` to come **before** the real tmux's directory on
+`PATH` (usually `/opt/homebrew/bin`) — `install.sh` checks the actual PATH
+*order*, not just whether `~/.local/bin` is present, and prints the exact
+line to prepend in `~/.zshrc` if it isn't. Prepend, not append:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+To bypass the wrapper for one call, invoke the real tmux by its absolute path.
 
 ## Running without the themed window
 

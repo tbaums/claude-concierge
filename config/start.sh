@@ -25,8 +25,22 @@ PROJ="$HOME/.claude/projects/$(printf '%s' "$WORKDIR" | sed 's#[/.]#-#g')"
 
 T() { tmux -L "$SOCK" "$@"; }
 
+# Version info for the status-bar header — read fresh on every window open
+# (cheap: one `cat` + one `claude --version` call, not per status-bar tick)
+# and cached as tmux user options; tmux.conf's status-right reads them via
+# #{@concierge_version} / #{@claude_version}. Refreshed on reattach too, so
+# an upgrade since the last window open shows up without killing the session.
+set_version_opts() {
+  local cc_version claude_version
+  cc_version="$(cat "$CFG/VERSION" 2>/dev/null || echo '?')"
+  claude_version="$("$CLAUDE" --version 2>/dev/null | awk '{print $1}')"
+  T set-option -t "$SESSION" @concierge_version "$cc_version"
+  T set-option -t "$SESSION" @claude_version "${claude_version:-?}"
+}
+
 # Re-attach if a concierge session is already alive (survives window close).
 if T has-session -t "$SESSION" 2>/dev/null; then
+  set_version_opts
   exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"
 fi
 
@@ -57,6 +71,7 @@ fi
 RUN="$CLAUDE $CONT --model $MODEL --dangerously-skip-permissions $NARROW_FLAG; exec \$SHELL"
 
 T -f "$CONF" new-session -d -s "$SESSION" "$RUN"
+set_version_opts
 
 # Durable raw-pane transcript (ANSI-stripped, dated). -o appends. Prune logs
 # older than 60 days so this stays bounded for months without attention.

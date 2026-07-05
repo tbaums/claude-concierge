@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-07-05
+
+### Added
+- **`tmux` wrapper**: installs to `~/.local/bin/tmux`, ahead of the real tmux
+  on `PATH`. Any tool that spins up its own tmux session/pane (dev-swarm
+  orchestrators, ad-hoc dashboards, etc.) now defaults onto the **Concierge
+  socket** instead of tmux's own bare "default" socket — unless it's already
+  inside a tmux client (`$TMUX` set) or explicitly passes `-L`/`-S`, both of
+  which are respected unchanged. This means a plain `Ctrl-b + s` / `j`/`k`
+  from any Concierge-attached client shows everything, instead of your
+  session list being split across two separate tmux servers. `install.sh`
+  now also checks `PATH` *ordering* (not just presence) and tells you the
+  exact fix if `~/.local/bin` doesn't come before the real tmux's directory.
+- **Version info in the header**: the status-bar now shows the installed
+  Concierge version and the running Claude Code version (`cc 0.2.0 · claude
+  2.1.201`), read once per window-open (including on reattach, so an upgrade
+  since the last window shows up without killing the session) and cached as
+  tmux user options rather than shelled out on every status-bar tick.
+
 ## [0.1.1] — 2026-06-11
 
 ### Fixed
@@ -34,5 +53,6 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.2.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.1.0

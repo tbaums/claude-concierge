@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ───────────────────────────────────────────────────────────────────────────
+#  tmux wrapper — installed to ~/.local/bin/tmux, meant to sit ahead of the
+#  real tmux on PATH. Any tool that spins up its own tmux session/pane (dev
+#  swarm orchestrators, ad-hoc dashboards, etc.) normally lands on tmux's own
+#  bare "default" socket unless something points it elsewhere — which splits
+#  your session list across servers you have to separately attach to. This
+#  makes the Concierge socket the default for everything, so Ctrl-b + s / j/k
+#  from any Concierge-attached client shows all of it.
+#
+#  Rules (checked in order — first match wins):
+#    1. Already inside a tmux client ($TMUX set)? tmux's own default already
+#       resolves to THAT session's socket. Pass through unchanged.
+#    2. Caller explicitly named a socket (-L <name> or -S <path>)? Respect it
+#       unchanged — this is the "unless otherwise specified" escape hatch.
+#    3. Otherwise: inject `-L concierge` before the real tmux runs.
+#
+#  To bypass this wrapper entirely for one call, invoke the real tmux by its
+#  absolute path (e.g. /opt/homebrew/bin/tmux) or run with a PATH that omits
+#  ~/.local/bin.
+#
+#  Requires ~/.local/bin to come BEFORE the real tmux's directory on PATH —
+#  install.sh checks this and tells you how to fix it if not.
+# ───────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SOCK_NAME="concierge"
+SELF="$HOME/.local/bin/tmux"
+
+REAL_TMUX=""
+IFS=: read -ra PATH_DIRS <<< "$PATH"
+for dir in "${PATH_DIRS[@]}"; do
+  candidate="$dir/tmux"
+  if [ -x "$candidate" ] && [ "$candidate" != "$SELF" ]; then
+    REAL_TMUX="$candidate"
+    break
+  fi
+done
+if [ -z "$REAL_TMUX" ]; then
+  echo "tmux wrapper ($SELF): could not find the real tmux anywhere else on PATH" >&2
+  exit 127
+fi
+
+# Rule 1: already attached somewhere — don't override tmux's own default.
+if [ -n "${TMUX:-}" ]; then
+  exec "$REAL_TMUX" "$@"
+fi
+
+# Rule 2: caller already named a socket — respect it.
+for arg in "$@"; do
+  case "$arg" in
+    -L|-S) exec "$REAL_TMUX" "$@" ;;
+  esac
+done
+
+# Rule 3: default to the Concierge socket.
+exec "$REAL_TMUX" -L "$SOCK_NAME" "$@"

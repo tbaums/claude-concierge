@@ -21,8 +21,8 @@ echo "repo: $REPO"
 
 # 1) Required files present -------------------------------------------------
 echo "› files"
-for f in LICENSE README.md RELEASING.md CHANGELOG.md install.sh \
-         bin/concierge config/tmux.conf config/start.sh config/clip.sh \
+for f in LICENSE README.md RELEASING.md CHANGELOG.md install.sh VERSION \
+         bin/concierge bin/tmux config/tmux.conf config/start.sh config/clip.sh \
          config/logsink.sh config/iterm-profile.py; do
   [[ -f "$REPO/$f" ]] && ok "exists: $f" || bad "missing: $f"
 done
@@ -36,6 +36,7 @@ for f in config/clip.sh config/logsink.sh; do
   sh -n "$REPO/$f" 2>/dev/null && ok "sh -n $f" || bad "sh -n $f"
 done
 bash -n "$REPO/install.sh" && ok "bash -n install.sh" || bad "bash -n install.sh"
+bash -n "$REPO/bin/tmux" && ok "bash -n bin/tmux" || bad "bash -n bin/tmux"
 python3 -c "compile(open('$REPO/config/iterm-profile.py').read(),'p','exec')" \
   && ok "py compile iterm-profile.py" || bad "py compile iterm-profile.py"
 
@@ -108,6 +109,62 @@ assert p["Custom Command"]=="Yes" and p["Command"]=="/tmp/start.sh"
 assert "Badge Text" in p and "Background Color" in p and "Ansi 5 Color" in p
 PY
 rm -rf "$(dirname "$OUT")"
+
+# 7) tmux wrapper defaults new sessions onto the concierge socket -----------
+echo "› tmux wrapper"
+WSB="$(mktemp -d)"
+mkdir -p "$WSB/home/.local/bin" "$WSB/realbin"
+cp "$REPO/bin/tmux" "$WSB/home/.local/bin/tmux"
+chmod +x "$WSB/home/.local/bin/tmux"
+cat > "$WSB/realbin/tmux" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$WMARK"
+EOF
+chmod +x "$WSB/realbin/tmux"
+
+run_wrapper() {
+  # -u TMUX: the test runner itself may already be inside a tmux client
+  # (e.g. run from within Concierge), which would otherwise leak through
+  # and mask the "no $TMUX" scenario these tests exist to check.
+  env -u TMUX WMARK="$WSB/argv.out" HOME="$WSB/home" PATH="$WSB/home/.local/bin:$WSB/realbin:$PATH" \
+    "$WSB/home/.local/bin/tmux" "$@"
+}
+
+rm -f "$WSB/argv.out"
+run_wrapper new-session -d -s foo
+if [[ -f "$WSB/argv.out" ]] && [[ "$(sed -n 1p "$WSB/argv.out")" == "-L" ]] \
+   && [[ "$(sed -n 2p "$WSB/argv.out")" == "concierge" ]]; then
+  ok "no \$TMUX, no -L/-S -> injects -L concierge"
+else
+  bad "no \$TMUX, no -L/-S -> did not inject -L concierge"
+fi
+
+rm -f "$WSB/argv.out"
+env TMUX="/tmp/fake,123,0" WMARK="$WSB/argv.out" HOME="$WSB/home" \
+  PATH="$WSB/home/.local/bin:$WSB/realbin:$PATH" "$WSB/home/.local/bin/tmux" new-session -d -s foo
+if [[ -f "$WSB/argv.out" ]] && ! grep -qx -- "-L" "$WSB/argv.out"; then
+  ok "\$TMUX set -> passes through unchanged"
+else
+  bad "\$TMUX set -> wrapper still injected a socket"
+fi
+
+rm -f "$WSB/argv.out"
+run_wrapper -L other new-session -d -s foo
+if [[ -f "$WSB/argv.out" ]] && [[ "$(sed -n 1p "$WSB/argv.out")" == "-L" ]] \
+   && [[ "$(sed -n 2p "$WSB/argv.out")" == "other" ]]; then
+  ok "explicit -L -> respected, not overridden"
+else
+  bad "explicit -L -> was overridden"
+fi
+
+rm -rf "$WSB"
+
+# 8) VERSION matches the latest CHANGELOG entry ------------------------------
+echo "› version"
+V="$(cat "$REPO/VERSION")"
+grep -q "^## \[$V\]" "$REPO/CHANGELOG.md" \
+  && ok "VERSION ($V) has a matching CHANGELOG entry" \
+  || bad "VERSION ($V) has no matching CHANGELOG entry"
 
 # Summary -------------------------------------------------------------------
 echo
