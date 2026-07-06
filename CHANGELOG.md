@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Response timestamps: every Claude message is stamped with its arrival time.
+  Implemented via Claude Code's native `showMessageTimestamps` setting, ensured
+  idempotently by `start.sh` at every launch. (Deliberately not tmux/iTerm-level:
+  tmux can't annotate an app's output stream per-message, and iTerm's row
+  timestamps reflect tmux redraws rather than message arrival.)
+
 ## [0.2.0] — 2026-07-05
 
 ### Added

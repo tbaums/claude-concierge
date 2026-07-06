@@ -47,6 +47,7 @@ the things that *don't* hurt:
 | 🏷️ **Always recognizable** | Persistent top banner + a `CONCIERGE` badge watermark on the window, showing the installed Concierge + Claude Code versions |
 | 🗣️ **Voice-first** | Defaults to Fable + your voice tap-to-send setting |
 | 🔌 **One socket for everything** | New tmux sessions from other tools default onto the Concierge socket, so `Ctrl-b + s` / `j`/`k` shows all of it — see [`docs/configuration.md`](docs/configuration.md) |
+| 🕐 **Timestamps** | Every Claude response is stamped with its arrival time (Claude Code's native `showMessageTimestamps`, ensured at launch) |
 
 ## Requirements
 

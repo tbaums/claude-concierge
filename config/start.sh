@@ -54,6 +54,26 @@ elif ls "$PROJ"/*.jsonl >/dev/null 2>&1; then
   CONT="--continue"
 fi
 
+# Timestamp every Claude response. This must live at the Claude level:
+# tmux can't annotate an app's output stream per-message, and iTerm's row
+# timestamps (⌘⇧E) reflect tmux redraws, not when a message actually arrived.
+# Claude Code has a native setting for it — ensure it idempotently (only
+# rewrites the file when the key isn't already true).
+python3 - <<'PY' 2>/dev/null || true
+import json, os
+p = os.path.expanduser("~/.claude/settings.json")
+try:
+    with open(p) as f:
+        s = json.load(f)
+except Exception:
+    s = {}
+if s.get("showMessageTimestamps") is not True:
+    s["showMessageTimestamps"] = True
+    with open(p, "w") as f:
+        json.dump(s, f, indent=2)
+        f.write("\n")
+PY
+
 # Default the concierge to Fable (your global default model is left untouched).
 # Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
 
