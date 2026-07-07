@@ -4,9 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-07-07
 
 ### Added
+- **Model + effort in the header**: the status bar now shows the active model
+  and reasoning effort level next to the version info (`cc 0.3.0 · claude
+  2.1.202 · opus 4.8 · xhigh`). The model is derived from the launch `--model`
+  and prettified (`claude-opus-4-8` → `opus 4.8`, trailing date snapshots
+  dropped); the effort reads the Claude Code `effortLevel` setting, overridable
+  per-launch with `CONCIERGE_EFFORT`. Both are cached as tmux user options and
+  refreshed on every window open/reattach, alongside the existing version info.
 - Response timestamps: every Claude message is stamped with its arrival time.
   Implemented via Claude Code's native `showMessageTimestamps` setting, ensured
   idempotently by `start.sh` at every launch. (Deliberately not tmux/iTerm-level:
@@ -62,6 +69,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.3.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.1.0

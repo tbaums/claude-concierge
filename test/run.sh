@@ -66,6 +66,39 @@ else
   bad "tmux not installed (required at runtime)"
 fi
 
+# 3b) status header: model prettifier + effort resolver ---------------------
+echo "› status header (model + effort)"
+# Source just the pure helpers out of start.sh so we test the real code.
+HELPERS="$(mktemp)"
+sed -n '/^pretty_model()/,/^}/p;/^resolve_effort()/,/^}/p' "$REPO/config/start.sh" > "$HELPERS"
+# shellcheck disable=SC1090
+. "$HELPERS"
+check_model() {
+  local got; got="$(pretty_model "$1")"
+  [[ "$got" == "$2" ]] && ok "pretty_model $1 -> $2" || bad "pretty_model $1 -> '$got' (want '$2')"
+}
+check_model claude-opus-4-8 "opus 4.8"
+check_model claude-fable-5 "fable 5"
+check_model claude-sonnet-5 "sonnet 5"
+check_model claude-haiku-4-5-20251001 "haiku 4.5"
+# effort: env override wins
+[[ "$(CONCIERGE_EFFORT=medium resolve_effort)" == "medium" ]] \
+  && ok "resolve_effort honors CONCIERGE_EFFORT" || bad "resolve_effort ignored CONCIERGE_EFFORT"
+# effort: reads effortLevel from settings.json when no override
+ESB="$(mktemp -d)"; mkdir -p "$ESB/.claude"
+printf '{\n  "model": "x",\n  "effortLevel": "xhigh"\n}\n' > "$ESB/.claude/settings.json"
+[[ "$(HOME="$ESB" CONCIERGE_EFFORT="" resolve_effort)" == "xhigh" ]] \
+  && ok "resolve_effort reads settings.json effortLevel" || bad "resolve_effort did not read settings.json"
+# effort: neutral fallback when nothing is set
+[[ "$(HOME="$ESB/nope" CONCIERGE_EFFORT="" resolve_effort)" == "default" ]] \
+  && ok "resolve_effort falls back to 'default'" || bad "resolve_effort missing fallback"
+rm -rf "$ESB"; rm -f "$HELPERS"
+# tmux.conf wires both new options into the status bar
+grep -q '@concierge_model' "$REPO/config/tmux.conf" \
+  && ok "status-right references @concierge_model" || bad "status-right missing @concierge_model"
+grep -q '@concierge_effort' "$REPO/config/tmux.conf" \
+  && ok "status-right references @concierge_effort" || bad "status-right missing @concierge_effort"
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"

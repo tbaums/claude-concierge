@@ -44,7 +44,7 @@ the things that *don't* hurt:
 | 🌀 **Scrolling** | Smooth wheel scroll, 50k-line scrollback, copy-mode auto-exits at the bottom |
 | 💾 **Crash-proof** | Auto-resumes the last Claude conversation; also keeps a dated, ANSI-stripped pane transcript |
 | 🎨 **Neon theme** | Synthwave palette, Monaspace (Nerd Font) ligatures, blur |
-| 🏷️ **Always recognizable** | Persistent top banner + a `CONCIERGE` badge watermark on the window, showing the installed Concierge + Claude Code versions |
+| 🏷️ **Always recognizable** | Persistent top banner + a `CONCIERGE` badge watermark on the window, showing the installed Concierge + Claude Code versions and the active model + effort level (e.g. `opus 4.8 · xhigh`) |
 | 🗣️ **Voice-first** | Defaults to Fable + your voice tap-to-send setting |
 | 🔌 **One socket for everything** | New tmux sessions from other tools default onto the Concierge socket, so `Ctrl-b + s` / `j`/`k` shows all of it — see [`docs/configuration.md`](docs/configuration.md) |
 | 🕐 **Timestamps** | Every Claude response is stamped with its arrival time (Claude Code's native `showMessageTimestamps`, ensured at launch) |
