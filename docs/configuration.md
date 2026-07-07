@@ -24,6 +24,31 @@ CONCIERGE_MODEL=claude-opus-4-8 concierge --here
 Or change the default permanently by editing `MODEL=` in
 `~/.config/claude-concierge/start.sh`.
 
+## Effort level
+
+The status header also shows the reasoning **effort level** next to the model
+(e.g. `opus 4.8 · xhigh`). By default this reflects the Claude Code
+`effortLevel` in `~/.claude/settings.json`. Override the *displayed* label
+per-launch with an env var:
+
+```sh
+CONCIERGE_EFFORT=high concierge --here
+```
+
+If neither is set it shows `default`.
+
+## Status header
+
+The top-right of the status bar shows, at a glance, what's running:
+
+```
+cc 0.2.0 · claude 2.1.202   opus 4.8 · xhigh   Tue 3:14 PM
+```
+
+— the Concierge version, the Claude Code version, then the active model and
+effort level. These are read fresh each time a window opens or reattaches, so a
+model/effort/version change shows up without killing the session.
+
 ## Voice tap-to-send
 
 Voice is a Claude Code setting, not a Concierge one. It comes from
