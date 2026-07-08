@@ -18,9 +18,9 @@ FONT="${CONCIERGE_FONT:-MonaspaceNeonNF-Regular 15}"
 
 echo "→ Installing config to $CFG"
 mkdir -p "$CFG"
-cp "$REPO_DIR"/config/{tmux.conf,start.sh,clip.sh,logsink.sh} "$CFG/"
+cp "$REPO_DIR"/config/{tmux.conf,start.sh,clip.sh,logsink.sh,session-menu.sh} "$CFG/"
 cp "$REPO_DIR/VERSION" "$CFG/VERSION"
-chmod +x "$CFG"/{start.sh,clip.sh,logsink.sh}
+chmod +x "$CFG"/{start.sh,clip.sh,logsink.sh,session-menu.sh}
 
 echo "→ Installing launcher to $BIN/concierge"
 mkdir -p "$BIN"
