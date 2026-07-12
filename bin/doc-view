@@ -1,0 +1,90 @@
+#!/bin/zsh
+# ───────────────────────────────────────────────────────────────────────────
+#  doc-view — the right-pane live viewer for `doc`.
+#
+#    doc-view <file> <baseline> [--once]
+#
+#  Polls <file>'s mtime every 0.3s and, on change (and once on start), renders
+#  a neon-themed, git-diff-style frame: a full-context unified diff of <file>
+#  against <baseline>, with a right-aligned line-number gutter. Added lines are
+#  green, removed lines magenta, unchanged lines dim. The line numbers track the
+#  CURRENT file (removed lines get a blank gutter). We do NOT compute section
+#  numbers — the author writes their own hierarchy into the markdown.
+#
+#  --once   render exactly one frame and exit (no screen clear); used by tests.
+#  NO_COLOR set → emit no ANSI escapes at all (plain text, for assertions).
+# ───────────────────────────────────────────────────────────────────────────
+
+file="${1:-}"
+baseline="${2:-}"
+once=0
+[[ "${3:-}" == "--once" ]] && once=1
+[[ "${1:-}" == "--once" ]] && { print -r -- "doc-view: usage: doc-view <file> <baseline> [--once]" >&2; exit 2; }
+[[ -z "$file" || -z "$baseline" ]] && { print -r -- "doc-view: usage: doc-view <file> <baseline> [--once]" >&2; exit 2; }
+
+# ── Neon palette (truecolor). Silenced entirely when NO_COLOR is set. ────────
+if [[ -n "${NO_COLOR:-}" ]]; then
+  C_RESET="" C_ADD="" C_DEL="" C_CTX="" C_GUT="" C_HDR="" C_LEG=""
+else
+  C_RESET=$'\033[0m'
+  C_ADD=$'\033[38;2;0;255;140m'                 # neon green   (added)
+  C_DEL=$'\033[38;2;255;46;151m'                # magenta      (removed)
+  C_CTX=$'\033[38;2;150;133;196m'               # dim fg       (context)
+  C_GUT=$'\033[38;2;111;91;154m'                # muted purple (gutter)
+  C_HDR=$'\033[48;2;255;46;151m\033[38;2;26;17;48m\033[1m'   # magenta bar
+  C_LEG=$'\033[38;2;0;232;255m'                 # cyan legend
+fi
+
+render() {
+  # Header: filename · turn diff · legend, neon magenta bar.
+  local name="${file:t}"
+  printf '%s 📝 %s · turn diff %s  %s+ added  - removed%s\n' \
+    "$C_HDR" "$name" "$C_RESET" "$C_LEG" "$C_RESET"
+
+  # Full-context unified diff = the entire current file, unchanged lines ' ',
+  # added '+', removed '-'. diff exits 1 when files differ — that is expected,
+  # not a failure, so we capture output and ignore the status.
+  local d
+  d="$(diff -U100000 "$baseline" "$file" 2>/dev/null)"
+
+  if [[ -z "$d" ]]; then
+    # Files identical (e.g. right after `doc snapshot`) → diff emits nothing.
+    # Render the whole file as context so the document still shows, with no
+    # added markers.
+    awk -v CTX="$C_CTX" -v GUT="$C_GUT" -v RESET="$C_RESET" '
+      { ln++; printf "%s%4d %s│%s %s  %s%s\n", GUT, ln, GUT, RESET, CTX, $0, RESET }
+    ' "$file"
+    return
+  fi
+
+  print -r -- "$d" | awk \
+    -v ADD="$C_ADD" -v DEL="$C_DEL" -v CTX="$C_CTX" -v GUT="$C_GUT" -v RESET="$C_RESET" '
+    /^@@/     { inhunk=1; next }     # everything after the single hunk header
+    !inhunk   { next }               # skip the ---/+++ file headers + preamble
+    /^\\/     { next }               # "\ No newline at end of file"
+    {
+      tag  = substr($0, 1, 1)
+      rest = substr($0, 2)
+      if (tag == "+")      { ln++; gut = ln; col = ADD; mark = "+" }
+      else if (tag == "-") {       gut = "";  col = DEL; mark = "-" }   # removed: blank gutter
+      else                 { ln++; gut = ln; col = CTX; mark = " " }   # context (leading space)
+      printf "%s%4s %s│%s %s%s %s%s\n", GUT, gut, GUT, RESET, col, mark, rest, RESET
+    }'
+}
+
+if (( once )); then
+  render
+  exit 0
+fi
+
+# Live loop: render on start, then re-render whenever the file mtime changes.
+last=""
+while :; do
+  now="$(stat -f %m "$file" 2>/dev/null)"
+  if [[ "$now" != "$last" ]]; then
+    printf '\033[H\033[2J'           # home + clear between frames
+    render
+    last="$now"
+  fi
+  sleep 0.3
+done

@@ -1,0 +1,158 @@
+#!/bin/zsh
+# ───────────────────────────────────────────────────────────────────────────
+#  doc — split-terminal markdown drafting inside the Claude Concierge window.
+#
+#  Left pane = the Claude chat (unchanged). Right pane = a live, neon-themed
+#  viewer of a markdown file on disk. Each "turn" the viewer shows a git-diff-
+#  style view of what changed since the previous turn — but the file is NOT
+#  git-versioned; we snapshot the baseline ourselves.
+#
+#  Subcommands:
+#    doc new "<title>" [--dir DIR]   seed DIR/<title>.md, open the viewer
+#    doc open <path>                 open an existing file in the viewer
+#    doc snapshot                    advance the turn baseline (baseline = file)
+#    doc close                       kill the viewer pane, clear state
+#    doc status                      show active doc, baseline, pane liveness
+#
+#  Env (all overridable):
+#    CONCIERGE_SOCK     tmux socket (-L)      default: concierge
+#    CONCIERGE_SESSION  tmux session          default: concierge
+#    DOC_STATE_DIR      state dir             default: ~/.config/claude-concierge/doc
+# ───────────────────────────────────────────────────────────────────────────
+
+CONCIERGE_SOCK="${CONCIERGE_SOCK:-concierge}"
+CONCIERGE_SESSION="${CONCIERGE_SESSION:-concierge}"
+DOC_STATE_DIR="${DOC_STATE_DIR:-$HOME/.config/claude-concierge/doc}"
+
+SELF_DIR="${0:A:h}"
+VIEW="$SELF_DIR/doc-view"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: doc <command> [args]
+
+  doc new "<title>" [--dir DIR]   seed DIR/<title>.md (default DIR: ~/Desktop),
+                                  open the live viewer in a right pane
+  doc open <path>                 open an existing markdown file in the viewer
+  doc snapshot                    advance the turn baseline (baseline = file now)
+  doc close                       kill the viewer pane and clear state
+  doc status                      show the active doc, baseline, pane liveness
+EOF
+  exit 2
+}
+
+# Deterministic, filesystem-safe baseline path for a given doc file path.
+baseline_for() {
+  local f="$1" slug
+  slug="$(md5 -qs "$f" 2>/dev/null)"
+  [[ -z "$slug" ]] && slug="$(printf '%s' "$f" | md5sum 2>/dev/null | awk '{print $1}')"
+  print -r -- "$DOC_STATE_DIR/$slug.baseline"
+}
+
+# Is the stored viewer pane still alive?
+pane_alive() {
+  local pane
+  [[ -f "$DOC_STATE_DIR/pane" ]] || return 1
+  pane="$(cat "$DOC_STATE_DIR/pane")"
+  [[ -n "$pane" ]] || return 1
+  tmux -L "$CONCIERGE_SOCK" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$pane"
+}
+
+# Split the concierge window (WITHOUT stealing focus) and launch the viewer in
+# the new right pane. Stores the new pane id for `doc close`.
+split_and_launch() {
+  local file="$1" baseline="$2" pane
+  pane="$(tmux -L "$CONCIERGE_SOCK" split-window -d -h -l '45%' \
+            -t "$CONCIERGE_SESSION" -P -F '#{pane_id}' \
+            "exec '$VIEW' '$file' '$baseline'" 2>/dev/null)"
+  if [[ -z "$pane" ]]; then
+    # Older tmux may reject -l '45%'; fall back to the percentage flag.
+    pane="$(tmux -L "$CONCIERGE_SOCK" split-window -d -h -p 45 \
+              -t "$CONCIERGE_SESSION" -P -F '#{pane_id}' \
+              "exec '$VIEW' '$file' '$baseline'" 2>/dev/null)"
+  fi
+  print -r -- "$pane" > "$DOC_STATE_DIR/pane"
+}
+
+cmd_new() {
+  local title="" dir="$HOME/Desktop"
+  while (( $# )); do
+    case "$1" in
+      --dir) dir="$2"; shift 2 ;;
+      *)     [[ -z "$title" ]] && title="$1"; shift ;;
+    esac
+  done
+  [[ -z "$title" ]] && usage
+
+  local file="$dir/$title.md"          # preserve spaces — do NOT slugify
+  if [[ ! -e "$file" ]]; then
+    mkdir -p "$dir"
+    printf '# %s\n\n' "$title" > "$file"
+  fi
+  file="${file:A}"                     # absolute path
+
+  mkdir -p "$DOC_STATE_DIR"
+  print -r -- "$file" > "$DOC_STATE_DIR/active"
+  local baseline; baseline="$(baseline_for "$file")"
+  : > "$baseline"                      # empty baseline → first draft is all-added
+
+  split_and_launch "$file" "$baseline"
+  print -r -- "doc: drafting $file"
+}
+
+cmd_open() {
+  local path="$1"
+  [[ -z "$path" ]] && usage
+  [[ -e "$path" ]] || { print -r -- "doc: no such file: $path" >&2; exit 1; }
+  local file; file="${path:A}"
+
+  mkdir -p "$DOC_STATE_DIR"
+  print -r -- "$file" > "$DOC_STATE_DIR/active"
+  local baseline; baseline="$(baseline_for "$file")"
+  cp "$file" "$baseline"               # baseline = current file → only later edits diff
+
+  split_and_launch "$file" "$baseline"
+  print -r -- "doc: opened $file"
+}
+
+cmd_snapshot() {
+  [[ -f "$DOC_STATE_DIR/active" ]] || { print -r -- "doc: no active doc" >&2; exit 1; }
+  local file; file="$(cat "$DOC_STATE_DIR/active")"
+  local baseline; baseline="$(baseline_for "$file")"
+  cp "$file" "$baseline"
+  print -r -- "baseline advanced"
+}
+
+cmd_close() {
+  if [[ -f "$DOC_STATE_DIR/pane" ]]; then
+    local pane; pane="$(cat "$DOC_STATE_DIR/pane")"
+    [[ -n "$pane" ]] && tmux -L "$CONCIERGE_SOCK" kill-pane -t "$pane" 2>/dev/null
+  fi
+  rm -f "$DOC_STATE_DIR/active" "$DOC_STATE_DIR/pane"
+  print -r -- "doc: closed"
+}
+
+cmd_status() {
+  if [[ -f "$DOC_STATE_DIR/active" ]]; then
+    local file; file="$(cat "$DOC_STATE_DIR/active")"
+    print -r -- "active:   $file"
+    print -r -- "baseline: $(baseline_for "$file")"
+  else
+    print -r -- "active:   (none)"
+  fi
+  if pane_alive; then
+    print -r -- "viewer:   alive ($(cat "$DOC_STATE_DIR/pane"))"
+  else
+    print -r -- "viewer:   not running"
+  fi
+}
+
+sub="${1:-}"; shift 2>/dev/null
+case "$sub" in
+  new)      cmd_new "$@" ;;
+  open)     cmd_open "$@" ;;
+  snapshot) cmd_snapshot "$@" ;;
+  close)    cmd_close "$@" ;;
+  status)   cmd_status "$@" ;;
+  *)        usage ;;
+esac

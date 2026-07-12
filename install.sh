@@ -31,6 +31,11 @@ echo "→ Installing tmux wrapper to $BIN/tmux (defaults new tmux sessions onto 
 cp "$REPO_DIR/bin/tmux" "$BIN/tmux"
 chmod +x "$BIN/tmux"
 
+echo "→ Installing doc mode ($BIN/doc, $BIN/doc-view)"
+cp "$REPO_DIR/bin/doc" "$BIN/doc"
+cp "$REPO_DIR/bin/doc-view" "$BIN/doc-view"
+chmod +x "$BIN/doc" "$BIN/doc-view"
+
 # Fonts: install Monaspace (Nerd Font) if Homebrew is present and it's missing.
 if command -v brew >/dev/null 2>&1; then
   if ! ls "$HOME/Library/Fonts"/Monaspace*NF-Regular.otf >/dev/null 2>&1; then

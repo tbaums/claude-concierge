@@ -22,14 +22,15 @@ echo "repo: $REPO"
 # 1) Required files present -------------------------------------------------
 echo "› files"
 for f in LICENSE README.md RELEASING.md CHANGELOG.md install.sh VERSION \
-         bin/concierge bin/tmux config/tmux.conf config/start.sh config/clip.sh \
+         bin/concierge bin/tmux bin/doc bin/doc-view config/tmux.conf \
+         config/start.sh config/clip.sh \
          config/logsink.sh config/iterm-profile.py; do
   [[ -f "$REPO/$f" ]] && ok "exists: $f" || bad "missing: $f"
 done
 
 # 2) Shell syntax -----------------------------------------------------------
 echo "› syntax"
-for f in bin/concierge config/start.sh; do
+for f in bin/concierge config/start.sh bin/doc bin/doc-view; do
   zsh -n "$REPO/$f" 2>/dev/null && ok "zsh -n $f" || bad "zsh -n $f"
 done
 for f in config/clip.sh config/logsink.sh; do
@@ -192,7 +193,141 @@ fi
 
 rm -rf "$WSB"
 
-# 8) VERSION matches the latest CHANGELOG entry ------------------------------
+# 8) doc mode --------------------------------------------------------------
+# Everything runs in a throwaway sandbox: temp dirs, NO_COLOR, and a throwaway
+# tmux socket. NEVER touches the live -L concierge socket/session or real $HOME.
+echo "› doc mode"
+DOCSOCK="doctest-$$"
+DTMP="$(mktemp -d)"
+DOC="$REPO/bin/doc"
+DOCVIEW="$REPO/bin/doc-view"
+
+# `doc` calls bare `tmux`, which on a real install resolves to the Concierge
+# tmux WRAPPER (~/.local/bin/tmux). This runner mutates $HOME earlier, which
+# breaks that wrapper's $HOME-based self-detection. To stay hermetic we resolve
+# the REAL tmux and (a) hand `doc` a PATH shim that points `tmux` straight at it,
+# (b) use it directly for our own assertions. Never touches the live socket.
+RTMUX=""
+IFS=: read -ra _pd <<< "$PATH"
+for _d in "${_pd[@]}"; do
+  _c="$_d/tmux"
+  [ -x "$_c" ] || continue
+  # Skip the Concierge tmux wrapper (a shell script starting with a shebang) —
+  # we want the REAL compiled tmux binary. (This runner mutated $HOME above, so
+  # we can't identify the wrapper by its ~/.local/bin path.)
+  [ "$(head -c2 "$_c" 2>/dev/null)" = '#!' ] && continue
+  RTMUX="$_c"; break
+done
+DSHIM="$DTMP/shim"; mkdir -p "$DSHIM"
+[ -n "$RTMUX" ] && ln -sf "$RTMUX" "$DSHIM/tmux"
+DOCPATH="$DSHIM:$PATH"
+
+# doc new "my test doc" --dir "$DTMP" seeds the H1 + writes active/baseline.
+# (No server on $DOCSOCK yet, so the split just no-ops; we only check seeding.)
+(
+  export CONCIERGE_SOCK="$DOCSOCK" CONCIERGE_SESSION="nonesession-$$" \
+         DOC_STATE_DIR="$DTMP/state" PATH="$DOCPATH"
+  "$DOC" new "my test doc" --dir "$DTMP" >/dev/null 2>&1
+) || true
+DOCFILE="$DTMP/my test doc.md"
+[[ -f "$DOCFILE" ]] && ok "doc new creates '<title>.md' (spaces preserved)" \
+  || bad "doc new did not create the file"
+grep -qx "# my test doc" "$DOCFILE" \
+  && ok "doc new seeds the H1 title" || bad "doc new did not seed the H1"
+[[ -f "$DTMP/state/active" ]] && ok "doc new writes state/active" \
+  || bad "doc new missing state/active"
+ls "$DTMP/state"/*.baseline >/dev/null 2>&1 \
+  && ok "doc new creates a baseline file" || bad "doc new missing baseline"
+BASE="$(ls "$DTMP/state"/*.baseline 2>/dev/null | head -1)"
+[[ -f "$BASE" && ! -s "$BASE" ]] \
+  && ok "doc new baseline starts empty (first draft is all-added)" \
+  || bad "doc new baseline is not empty"
+
+# doc-view --once (NO_COLOR) on (empty baseline, file with content): the doc
+# text renders AND an added-line marker is present; no crash.
+V1="$(NO_COLOR=1 "$DOCVIEW" "$DOCFILE" "$BASE" --once 2>&1)"
+rc=$?
+[[ $rc -eq 0 ]] && ok "doc-view --once exits cleanly on empty baseline" \
+  || bad "doc-view --once crashed (rc=$rc)"
+printf '%s' "$V1" | grep -q "my test doc" \
+  && ok "doc-view renders the doc text" || bad "doc-view missing doc text"
+printf '%s' "$V1" | grep -qE '\│ \+ ' \
+  && ok "doc-view marks added lines (empty baseline → all added)" \
+  || bad "doc-view did not mark added lines"
+# NO_COLOR really means no escapes.
+if printf '%s' "$V1" | LC_ALL=C grep -q $'\033'; then
+  bad "doc-view emitted ANSI escapes under NO_COLOR"
+else
+  ok "doc-view emits no ANSI escapes under NO_COLOR"
+fi
+
+# doc snapshot: baseline becomes equal to the file → viewer shows zero added
+# markers (everything is context).
+(
+  export DOC_STATE_DIR="$DTMP/state"
+  "$DOC" snapshot >/dev/null 2>&1
+)
+if diff -q "$BASE" "$DOCFILE" >/dev/null 2>&1; then
+  ok "doc snapshot advances baseline to equal the file"
+else
+  bad "doc snapshot did not sync baseline to file"
+fi
+V2="$(NO_COLOR=1 "$DOCVIEW" "$DOCFILE" "$BASE" --once 2>&1)"
+if printf '%s' "$V2" | grep -qE '\│ \+ '; then
+  bad "doc-view still marked added lines after snapshot"
+else
+  ok "doc-view shows zero added markers after snapshot (all context)"
+fi
+printf '%s' "$V2" | grep -q "my test doc" \
+  && ok "doc-view still renders the doc as context after snapshot" \
+  || bad "doc-view lost the doc text after snapshot"
+
+# Append a line: the new line is marked added; an older line is NOT (context).
+printf 'a brand new line\n' >> "$DOCFILE"
+V3="$(NO_COLOR=1 "$DOCVIEW" "$DOCFILE" "$BASE" --once 2>&1)"
+printf '%s' "$V3" | grep -qE '\│ \+ a brand new line' \
+  && ok "doc-view marks the appended line as added" \
+  || bad "doc-view did not mark the appended line added"
+printf '%s' "$V3" | grep -qE '\│   # my test doc' \
+  && ok "doc-view shows the older H1 as context (not added)" \
+  || bad "doc-view wrongly marked the older line"
+
+# tmux split preserves focus (pane 0 stays active thanks to split-window -d).
+if [ -n "$RTMUX" ]; then
+  "$RTMUX" -L "$DOCSOCK" new-session -d -s doctest -x 200 -y 50 'sleep 30' 2>/dev/null
+  (
+    export CONCIERGE_SOCK="$DOCSOCK" CONCIERGE_SESSION="doctest" \
+           DOC_STATE_DIR="$DTMP/state2" PATH="$DOCPATH"
+    "$DOC" new "split doc" --dir "$DTMP" >/dev/null 2>&1
+  )
+  np="$("$RTMUX" -L "$DOCSOCK" list-panes -t doctest 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "$np" == "2" ]] && ok "doc new splits the window into 2 panes" \
+    || bad "doc new did not create a second pane (got $np)"
+  act="$("$RTMUX" -L "$DOCSOCK" list-panes -t doctest -F '#{pane_index}#{?pane_active,*,}' 2>/dev/null | grep '\*' | tr -d '*')"
+  [[ "$act" == "0" ]] && ok "focus preserved: active pane is still 0 (split -d)" \
+    || bad "focus stolen: active pane is $act, not 0"
+  "$RTMUX" -L "$DOCSOCK" kill-server 2>/dev/null
+else
+  bad "real tmux not found (doc mode split test skipped)"
+fi
+rm -rf "$DTMP"
+
+# 7b) install.sh lands doc + doc-view into $BIN (temp HOME) ------------------
+echo "› install (doc mode)"
+IHOME="$(mktemp -d)"
+# Pre-seed a matching font so install.sh's Homebrew font-install branch is
+# skipped — the test must never trigger a real `brew install`.
+mkdir -p "$IHOME/Library/Fonts"
+: > "$IHOME/Library/Fonts/MonaspaceNeonNF-Regular.otf"
+if HOME="$IHOME" CONCIERGE_FONT="Menlo 12" bash "$REPO/install.sh" >/dev/null 2>&1; then :; fi
+IBIN="$IHOME/.local/bin"
+[[ -x "$IBIN/doc" ]] && ok "install.sh installs bin/doc (executable)" \
+  || bad "install.sh did not install doc"
+[[ -x "$IBIN/doc-view" ]] && ok "install.sh installs bin/doc-view (executable)" \
+  || bad "install.sh did not install doc-view"
+rm -rf "$IHOME"
+
+# 9) VERSION matches the latest CHANGELOG entry ------------------------------
 echo "› version"
 V="$(cat "$REPO/VERSION")"
 grep -q "^## \[$V\]" "$REPO/CHANGELOG.md" \
