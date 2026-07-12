@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-07-11
+
+### Fixed
+- Fix `doc open` — a `local path` declaration clobbered zsh's special `PATH`
+  array, breaking mkdir/cp/awk so the file never opened; renamed to `target` +
+  added a regression test exercising `doc open`.
+
 ## [0.4.0] — 2026-07-11
 
 ### Added
@@ -87,6 +94,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.4.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.2.0

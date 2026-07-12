@@ -101,10 +101,13 @@ cmd_new() {
 }
 
 cmd_open() {
-  local path="$1"
-  [[ -z "$path" ]] && usage
-  [[ -e "$path" ]] || { print -r -- "doc: no such file: $path" >&2; exit 1; }
-  local file; file="${path:A}"
+  # NB: never name a local 'path' in zsh — it's tied to the special PATH array,
+  # so `local path=...` blanks PATH for this function (and callees), breaking
+  # every external command (mkdir/cp/awk). Use 'target'.
+  local target="$1"
+  [[ -z "$target" ]] && usage
+  [[ -e "$target" ]] || { print -r -- "doc: no such file: $target" >&2; exit 1; }
+  local file; file="${target:A}"
 
   mkdir -p "$DOC_STATE_DIR"
   print -r -- "$file" > "$DOC_STATE_DIR/active"

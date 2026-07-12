@@ -310,6 +310,50 @@ if [ -n "$RTMUX" ]; then
 else
   bad "real tmux not found (doc mode split test skipped)"
 fi
+
+# doc open on an EXISTING file (spaces in name). This is the v0.4.0 regression:
+# cmd_open used `local path="$1"`, which in zsh blanks the special PATH array for
+# the function and its callees, so mkdir/cp/tmux became "command not found" — no
+# state was written and no pane appeared, yet the suite stayed green. The state
+# and baseline assertions below are the direct proof that PATH was intact (they
+# FAIL against the buggy code, PASS against the fix). Own state dir + session.
+if [ -n "$RTMUX" ]; then
+  OPENFILE="$DTMP/some file.md"
+  printf '# opened doc\n\nbody line\n' > "$OPENFILE"
+  "$RTMUX" -L "$DOCSOCK" new-session -d -s docopen -x 200 -y 50 'sleep 30' 2>/dev/null
+  oout="$(
+    export CONCIERGE_SOCK="$DOCSOCK" CONCIERGE_SESSION="docopen" \
+           DOC_STATE_DIR="$DTMP/state3" PATH="$DOCPATH"
+    "$DOC" open "$OPENFILE" 2>&1
+  )"; orc=$?
+  [[ $orc -eq 0 ]] && ok "doc open exits 0 on an existing file" \
+    || bad "doc open exited non-zero ($orc)"
+  printf '%s' "$oout" | grep -q "opened" \
+    && ok "doc open prints 'opened'" || bad "doc open did not print 'opened'"
+  # State written → mkdir + the redirect ran → PATH was intact (fails under bug).
+  ap="$(cat "$DTMP/state3/active" 2>/dev/null)"
+  if [[ -f "$DTMP/state3/active" && -n "$ap" && "$ap" -ef "$OPENFILE" ]]; then
+    ok "doc open writes state/active pointing at the file"
+  else
+    bad "doc open did not write state/active at the file (PATH clobbered?)"
+  fi
+  # Baseline copied → cp ran → PATH intact (fails under bug). It equals the file.
+  OBASE="$(ls "$DTMP/state3"/*.baseline 2>/dev/null | head -1)"
+  if [[ -n "$OBASE" && -f "$OBASE" ]] && diff -q "$OBASE" "$OPENFILE" >/dev/null 2>&1; then
+    ok "doc open creates a baseline copy of the file (cp ran → PATH intact)"
+  else
+    bad "doc open missing/!matching baseline (cp failed → PATH clobbered?)"
+  fi
+  onp="$("$RTMUX" -L "$DOCSOCK" list-panes -t docopen 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "$onp" == "2" ]] && ok "doc open splits the session into 2 panes" \
+    || bad "doc open did not create a second pane (got $onp)"
+  oact="$("$RTMUX" -L "$DOCSOCK" list-panes -t docopen -F '#{pane_index}#{?pane_active,*,}' 2>/dev/null | grep '\*' | tr -d '*')"
+  [[ "$oact" == "0" ]] && ok "doc open preserves focus on pane 0 (split -d)" \
+    || bad "doc open stole focus (active pane $oact, not 0)"
+  "$RTMUX" -L "$DOCSOCK" kill-server 2>/dev/null
+else
+  bad "real tmux not found (doc open test skipped)"
+fi
 rm -rf "$DTMP"
 
 # 7b) install.sh lands doc + doc-view into $BIN (temp HOME) ------------------
