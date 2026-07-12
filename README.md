@@ -82,6 +82,42 @@ concierge --new    # start a brand-new conversation instead of resuming
 concierge --here   # run in the current terminal (no new window / no theming)
 ```
 
+## Doc mode
+
+A split-terminal markdown drafting workflow, right inside the Concierge window:
+the **left** pane stays your Claude chat, the **right** pane becomes a live
+viewer of a markdown file on disk. You draft with the AI, reference "line X",
+and each turn the viewer shows a **git-diff-style view of what changed** — even
+though the file isn't git-versioned (doc mode snapshots the baseline itself).
+
+```sh
+doc new "My Spec"        # seed ~/Desktop/My Spec.md, open the live viewer
+```
+
+`doc new` seeds `~/Desktop/<title>.md` with an H1 (spaces in the title are
+preserved — the filename is *not* slugified) and splits the window **without
+stealing focus** — your cursor stays in the Claude chat on the left. Pass
+`--dir DIR` to write somewhere other than the Desktop.
+
+The right pane polls the file and re-renders on every save. Each frame is a
+full-context view of the whole document with a right-aligned line-number gutter:
+**added lines are green (`+`)**, **removed lines magenta (`-`)**, and unchanged
+lines are dimmed context — so you always see exactly what changed since the last
+turn. (Line numbers track the current file; you write any section numbering into
+the markdown yourself.)
+
+```sh
+doc snapshot   # advance the turn baseline — the next diff shows only newer edits
+doc open PATH  # draft an existing markdown file instead of creating one
+doc status     # show the active doc, its baseline, and whether the viewer is up
+doc close      # kill the viewer pane and clear the doc-mode state
+```
+
+Typical loop: `doc new` → talk to Claude → it edits the file → watch the diff →
+`doc snapshot` to bank the turn → keep iterating. It's pure zsh + standard macOS
+userland (`awk`, `diff`, `stat`) — no watchers, no dependencies — and honors
+`NO_COLOR`.
+
 ## How resume works
 
 Claude Code already writes a complete, structured transcript of every message

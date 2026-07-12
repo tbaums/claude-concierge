@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-11
+
+### Added
+- **Doc mode**: a split-terminal markdown drafting workflow inside the Concierge
+  window. `doc new "<title>"` seeds `~/Desktop/<title>.md` (spaces preserved) and
+  opens a live, neon-themed viewer in a right pane — **without stealing focus**
+  from the Claude chat on the left (`split-window -d`). The viewer polls the file
+  and, on every save, re-renders a git-diff-style **per-turn diff**: a
+  full-context view of the whole document with a right-aligned line-number gutter,
+  added lines in green (`+`), removed lines in magenta (`-`), and unchanged lines
+  dimmed as context. Reference "line X" to your AI, iterate, then `doc snapshot`
+  to advance the turn baseline so the next diff shows only what changed since.
+  The file is **not** git-versioned — doc mode snapshots the baseline itself.
+  Also `doc open <path>` (draft an existing file), `doc close` (kill the viewer
+  pane), and `doc status`. Pure zsh + standard macOS userland (`awk`, `diff`,
+  `stat`) — no Python, no watchers, no dependencies. Honors `NO_COLOR`. Installed
+  to `~/.local/bin/doc` and `~/.local/bin/doc-view` by `install.sh`.
+
 ## [0.3.0] — 2026-07-07
 
 ### Added
@@ -69,6 +87,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.4.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.2.0
 [0.1.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.1.1
