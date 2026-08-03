@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08-03
+
+### Changed
+- **Default model is now Opus 5** (`claude-opus-5`), previously Fable 5.
+  `CONCIERGE_MODEL=… concierge --here` still overrides it per launch, and the
+  status header label follows whatever is launched.
+
+### Fixed
+- Docs described the launch `--model` as merely "independent of" your global
+  `~/.claude/settings.json` `model` setting. It actually **overrides** it, so
+  changing `settings.json` alone never affects what a Concierge window launches
+  — a trap worth naming explicitly. Both `docs/configuration.md` and
+  `docs/troubleshooting.md` now say so.
+- Docs told you to change the default by editing `MODEL=` in
+  `~/.config/claude-concierge/start.sh` — the *installed* copy, which
+  `install.sh` overwrites on every upgrade, so the change silently disappeared.
+  They now point at the repo's `config/start.sh` plus a re-run of `install.sh`.
+
 ## [0.4.1] — 2026-07-11
 
 ### Fixed
@@ -94,6 +112,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.5.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.5.0
 [0.4.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.3.0

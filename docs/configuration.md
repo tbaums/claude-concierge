@@ -9,20 +9,24 @@ Everything the Concierge installs lives in three places:
 | `~/.local/bin/tmux` | wrapper that defaults new tmux sessions onto the Concierge socket |
 | `~/Library/Application Support/iTerm2/DynamicProfiles/claude-concierge.json` | the themed iTerm2 profile |
 
-## The model (defaults to Fable)
+## The model (defaults to Opus 5)
 
-The Concierge launches Claude with `--model claude-fable-5`, independent of your
+The Concierge launches Claude with `--model claude-opus-5`, independent of your
 global `~/.claude/settings.json` `model` setting (so your other Claude sessions
-keep whatever default you've chosen).
+keep whatever default you've chosen). Note the direction of that independence:
+the explicit `--model` flag **overrides** `settings.json`, so changing
+`settings.json` alone will not change what a Concierge window launches.
 
 Override per-launch with an env var:
 
 ```sh
-CONCIERGE_MODEL=claude-opus-4-8 concierge --here
+CONCIERGE_MODEL=claude-fable-5 concierge --here
 ```
 
-Or change the default permanently by editing `MODEL=` in
-`~/.config/claude-concierge/start.sh`.
+Or change the default permanently by editing `MODEL=` in the repo's
+`config/start.sh` and re-running `bash install.sh`. Edit the repo copy, not the
+installed `~/.config/claude-concierge/start.sh` — `install.sh` overwrites that
+one on every upgrade, so changes made there are silently lost.
 
 ## Effort level
 
