@@ -111,13 +111,77 @@ PY
 # Default the concierge to Fable (your global default model is left untouched).
 # Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
 
-# Narrow-display mode (default ON): the concierge is usually read in a terminal
-# on a small/older iPad, where wide output runs off-screen. Inject a formatting
-# instruction so the agent keeps replies narrow. Opt out with CONCIERGE_NARROW=0.
-NARROW="${CONCIERGE_NARROW:-1}"
+# ── Narrow-display mode (auto-detected; default is FULL WIDTH) ─────────────
+# Wide output is the right default: use however many columns the terminal
+# actually has. Only when the launching terminal is genuinely narrow (reading
+# the session on a tablet or a small SSH client) do we inject a formatting
+# instruction telling the agent to keep its output narrow.
+#
+#   CONCIERGE_NARROW=1   force narrow, whatever the width
+#   CONCIERGE_NARROW=0   force full width, whatever the width
+#   unset                auto — narrow only below CONCIERGE_NARROW_COLS columns
+#
+# Threshold: 70. A plain terminal defaults to 80 columns and the Concierge's own
+# iTerm profile opens at 120, so 70 sits below every normal desktop width (a
+# stock 80-col window is never mistaken for narrow) while staying well above the
+# ~40–55 columns a tablet SSH client reports.
+#
+# NOTE: to set CONCIERGE_NARROW persistently it must be exported from
+# ~/.zshenv, NOT ~/.zshrc. This script's shebang is a *non-interactive login*
+# zsh, and zsh reads ~/.zshrc only for interactive shells — so a ~/.zshrc export
+# is invisible here when iTerm launches start.sh as its profile command, yet it
+# does reach `concierge --here` (which inherits your interactive shell's env).
+# That split is what makes the failure look intermittent.
+NARROW_COLS="${CONCIERGE_NARROW_COLS:-70}"
+
+# Columns of the terminal that launched us, or "" when we genuinely can't tell
+# (no TTY: cron, a pipe, a detached launcher). Deliberately does NOT trust
+# `tput cols` or $COLUMNS on their own — with no TTY at all `tput cols` still
+# reports terminfo's 80 and zsh sets COLUMNS=0, so neither can distinguish
+# "80 columns wide" from "no idea". A real ioctl on the tty is the only honest
+# answer; tput is a fallback only once we know stdout IS a tty.
+term_cols() {
+  local c
+  # 2>/dev/null must come FIRST: redirections apply left to right, and with no
+  # controlling terminal it's the `< /dev/tty` redirection itself that fails, so
+  # the shell prints "/dev/tty: Device not configured" unless stderr is already
+  # silenced by the time it's attempted.
+  c="$(stty size 2>/dev/null < /dev/tty | awk '{print $2}')"
+  if [ -z "$c" ] && [ -t 1 ]; then
+    c="$(tput cols 2>/dev/null)"
+  fi
+  printf '%s' "$c"
+}
+
+# Should the narrow instruction be injected? Pure decision, no I/O, so it can be
+# tested directly: $1 = CONCIERGE_NARROW ("" = auto), $2 = measured columns
+# ("" / non-numeric / 0 = unknown), $3 = threshold. Prints 1 (narrow) or 0.
+# Unknown width must never mean narrow — full width is what we want when in doubt.
+want_narrow() {
+  case "$1" in
+    1) printf '1'; return ;;
+    0) printf '0'; return ;;
+  esac
+  case "$2" in
+    ''|*[!0-9]*) printf '0'; return ;;
+  esac
+  if [ "$2" -gt 0 ] && [ "$2" -lt "$3" ]; then printf '1'; else printf '0'; fi
+}
+
+COLS="$(term_cols)"
 NARROW_FLAG=""
-if [ "$NARROW" = "1" ]; then
-  NARROW_TEXT="DISPLAY: this session is read in a terminal on a small/older iPad (narrow viewport, ~50 cols). Keep ALL output narrow: short lines (wrap prose by ~48 chars), no wide tables or box-drawing, break long shell commands across lines with backslashes, prefer short vertical bullet lists over wide rows, and do not dump long/wide code or log blocks (show only the few relevant lines). Be terse and scannable."
+if [ "$(want_narrow "${CONCIERGE_NARROW-}" "$COLS" "$NARROW_COLS")" = "1" ]; then
+  # Describe the viewport, don't assert a device. Quote the measured width only
+  # when it really is narrow — with CONCIERGE_NARROW=1 forced on a wide terminal
+  # (creating a session you'll read from a small screen later) the measurement is
+  # exactly what the user is overriding, so fall back to a generic description.
+  WRAP=48
+  WIDTH_DESC="a narrow viewport (roughly 50 columns)"
+  if [ -n "$COLS" ] && [ "$COLS" -gt 12 ] && [ "$COLS" -lt "$NARROW_COLS" ]; then
+    WRAP=$((COLS - 2))
+    WIDTH_DESC="a narrow viewport (about $COLS columns)"
+  fi
+  NARROW_TEXT="DISPLAY: this session is being read in $WIDTH_DESC, where wide output runs off-screen. Keep ALL output narrow: short lines (wrap prose by ~$WRAP chars), no wide tables or box-drawing, break long shell commands across lines with backslashes, prefer short vertical bullet lists over wide rows, and do not dump long/wide code or log blocks (show only the few relevant lines). Be terse and scannable."
   NARROW_FLAG="--append-system-prompt $(printf '%q' "$NARROW_TEXT")"
 fi
 

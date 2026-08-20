@@ -100,6 +100,50 @@ grep -q '@concierge_model' "$REPO/config/tmux.conf" \
 grep -q '@concierge_effort' "$REPO/config/tmux.conf" \
   && ok "status-right references @concierge_effort" || bad "status-right missing @concierge_effort"
 
+# 3c) narrow-display mode: auto-detect, with both-direction override ---------
+echo "› narrow mode (width auto-detect)"
+# Source the real functions out of start.sh so we test the shipped code.
+NHELP="$(mktemp)"
+sed -n '/^term_cols()/,/^}/p;/^want_narrow()/,/^}/p' "$REPO/config/start.sh" > "$NHELP"
+# shellcheck disable=SC1090
+. "$NHELP"
+# $1 = CONCIERGE_NARROW ("" = auto), $2 = cols ("" = unknown), $3 = want, $4 = label
+check_narrow() {
+  local got; got="$(want_narrow "$1" "$2" 70)"
+  [[ "$got" == "$3" ]] && ok "narrow: $4" || bad "narrow: $4 (got $got, want $3)"
+}
+# Default (auto) on any normal desktop width must be FULL WIDTH.
+check_narrow "" 120 0 "auto @120 cols -> full width"
+check_narrow "" 80  0 "auto @80 cols (stock terminal) -> full width"
+check_narrow "" 70  0 "auto @70 cols (at threshold) -> full width"
+# Genuinely narrow viewports still get the instruction.
+check_narrow "" 69  1 "auto @69 cols -> narrow"
+check_narrow "" 44  1 "auto @44 cols (tablet SSH) -> narrow"
+# Unknown / bogus width must NEVER mean narrow (non-TTY, cron, COLUMNS=0 leak).
+check_narrow "" ""    0 "auto, width unknown -> full width"
+check_narrow "" 0     0 "auto, width 0 -> full width"
+check_narrow "" abc   0 "auto, non-numeric width -> full width"
+check_narrow "" -5    0 "auto, negative width -> full width"
+# Explicit override wins in BOTH directions, whatever the measurement says.
+check_narrow 1 120 1 "CONCIERGE_NARROW=1 forces narrow on a wide terminal"
+check_narrow 0 44  0 "CONCIERGE_NARROW=0 forces full width on a narrow terminal"
+check_narrow 1 ""  1 "CONCIERGE_NARROW=1 works with width unknown"
+# term_cols only ever yields a plain number or nothing — never a bogus token.
+# (Runs green both with a tty, e.g. inside Concierge, and without, e.g. in CI.)
+tc="$(term_cols)"
+[[ -z "$tc" || "$tc" =~ ^[0-9]+$ ]] \
+  && ok "term_cols returns a number or empty (got '${tc:-<empty>}')" \
+  || bad "term_cols returned a non-numeric value ('$tc')"
+rm -f "$NHELP"
+# Regressions: the default must not be hardcoded on, and the prompt must not
+# assert a device (it described the user's iPad as fact through v0.5.0).
+grep -q 'CONCIERGE_NARROW:-1' "$REPO/config/start.sh" \
+  && bad "start.sh still hardcodes narrow mode ON by default" \
+  || ok "narrow mode is not hardcoded ON"
+grep -qi 'ipad' "$REPO/config/start.sh" \
+  && bad "start.sh still asserts 'iPad' in the injected prompt" \
+  || ok "injected prompt describes a viewport, not a device"
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"

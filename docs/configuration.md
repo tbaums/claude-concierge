@@ -41,6 +41,59 @@ CONCIERGE_EFFORT=high concierge --here
 
 If neither is set it shows `default`.
 
+## Output width (narrow-display mode)
+
+By default the Concierge uses **the full width of your terminal**. It measures
+the launching terminal and only when that terminal is genuinely narrow does it
+append a system-prompt instruction asking the agent to keep its output narrow
+(short lines, no wide tables, wrapped shell commands) — which is what you want
+when you're reading the session on a tablet or a small SSH client, and very much
+not what you want on a laptop.
+
+| `CONCIERGE_NARROW` | Behavior |
+|---|---|
+| unset (default) | **auto** — narrow only below the column threshold |
+| `1` | force narrow, whatever the terminal width |
+| `0` | force full width, whatever the terminal width |
+
+The threshold is **70 columns**, overridable with `CONCIERGE_NARROW_COLS`. A
+stock terminal is 80 columns wide and the Concierge's own iTerm profile opens at
+120, so 70 sits below every normal desktop width while staying well above the
+~40–55 columns a tablet SSH client reports.
+
+If the width can't be determined at all (no TTY — launched from cron, a pipe, a
+detached launcher), the Concierge chooses **full width**. Unknown never means
+narrow.
+
+```sh
+CONCIERGE_NARROW=1 concierge --here      # force narrow for this launch
+CONCIERGE_NARROW_COLS=60 concierge --here  # only go narrow under 60 columns
+```
+
+### Setting it persistently: `~/.zshenv`, not `~/.zshrc`
+
+To make an override stick, export it from **`~/.zshenv`**:
+
+```sh
+echo 'export CONCIERGE_NARROW=1' >> ~/.zshenv
+```
+
+`~/.zshrc` will *appear* to work and then silently fail. `start.sh` runs as a
+non-interactive login shell (`#!/bin/zsh -l`), and zsh reads `~/.zshrc` only for
+**interactive** shells — so when iTerm launches `start.sh` as its profile
+command, a `~/.zshrc` export is invisible. It does reach `concierge --here`,
+which inherits your interactive shell's environment. Same trap as
+`CONCIERGE_MODEL`. `~/.zshenv` is read in every case.
+
+### It only applies to a *new* session
+
+The instruction is a launch argument to `claude`, so it's fixed for the life of
+the tmux session. Re-running `concierge` while a session is alive just
+re-attaches — it does not relaunch Claude, so a changed `CONCIERGE_NARROW` has
+no effect until the session actually ends (`Ctrl-b` `:kill-session`, `exit` out
+of the pane, or a reboot). A long-lived session keeps whatever width mode it was
+born with.
+
 ## Status header
 
 The top-right of the status bar shows, at a glance, what's running:
