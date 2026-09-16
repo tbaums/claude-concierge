@@ -4,13 +4,54 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] — 2026-09-16
 
 ### Added
 - **Claude in Chrome is enabled by default.** `start.sh` now launches Claude Code
   with `--chrome`, so the Concierge can drive your logged-in Chrome (per-site
   extension permission is still the gate). Worker panes launched via
   `pane-claude` already did this; the coordinator was the one session without it.
+
+### Changed
+- **Full width is now the default.** Narrow-display mode used to be hardcoded ON
+  (`CONCIERGE_NARROW=1`), injecting a system-prompt instruction that asserted the
+  session was "read in a terminal on a small/older iPad (~50 cols)" and asked the
+  agent to wrap everything to ~48 characters. On a laptop that threw away most of
+  the window. It's now **auto-detected from the launching terminal's width**:
+  - unset (default) — **auto**: narrow only below 70 columns;
+  - `CONCIERGE_NARROW=1` — force narrow, whatever the width;
+  - `CONCIERGE_NARROW=0` — force full width, whatever the width.
+
+  The threshold is overridable with the new `CONCIERGE_NARROW_COLS`. 70 sits
+  below every normal desktop width (a stock terminal is 80 columns, the
+  Concierge's own iTerm profile opens at 120) and well above the ~40–55 columns a
+  tablet SSH client reports. Existing `CONCIERGE_NARROW=0`/`=1` overrides keep
+  working unchanged — only the *unset* default moved.
+- Width is measured with a real `ioctl` on the controlling terminal
+  (`stty size < /dev/tty`), falling back to `tput cols` only once stdout is known
+  to be a TTY. Neither is trustworthy alone: with no TTY at all `tput cols` still
+  reports terminfo's 80 and zsh sets `COLUMNS=0`, so neither can tell "80 columns
+  wide" from "no idea". When the width genuinely can't be determined (cron, a
+  pipe, a detached launcher) the Concierge picks **full width** — unknown never
+  means narrow.
+- The narrow instruction, when it does fire, now describes **the viewport rather
+  than asserting a device** ("a narrow viewport (about 44 columns)") and derives
+  its wrap target from the measured width instead of a fixed ~48 characters.
+
+### Fixed
+- Documented `CONCIERGE_NARROW` for the first time — it shipped in v0.1.x and
+  appeared in no README, doc page, or changelog entry, so the only way to
+  discover the opt-out was to read `config/start.sh`.
+- Named the `~/.zshenv` trap in the docs: `start.sh` runs as a *non-interactive
+  login* shell, and zsh reads `~/.zshrc` only for interactive shells, so an
+  override exported from `~/.zshrc` is invisible to a normal `concierge` launch
+  — yet it *does* reach `concierge --here`, which inherits the interactive
+  environment. That asymmetry makes the failure look intermittent. Same trap
+  previously hit `CONCIERGE_MODEL`.
+- Documented that the mode is a launch argument and therefore fixed for the life
+  of the tmux session: re-running `concierge` re-attaches rather than relaunching
+  Claude, so a long-lived session keeps whatever width mode it was born with
+  until it's actually killed.
 
 ## [0.5.0] — 2026-08-03
 
@@ -120,6 +161,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.6.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.5.0
 [0.4.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.0

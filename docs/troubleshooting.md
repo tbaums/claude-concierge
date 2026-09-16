@@ -44,6 +44,24 @@ per-launch with `CONCIERGE_MODEL=… concierge --here`, or edit `MODEL=` in the
 repo's `config/start.sh` and re-run `bash install.sh` (editing the installed
 `~/.config/claude-concierge/start.sh` doesn't stick — upgrades overwrite it).
 
+### Replies are squeezed into a skinny column on a wide window
+The session is in narrow-display mode. Since v0.6.0 that's auto-detected from
+the terminal width and off by default above 70 columns — but the mode is a
+**launch argument**, fixed for the life of the tmux session, and re-running
+`concierge` only re-attaches. A session created before v0.6.0 (or in a narrow
+window) keeps its narrow instruction until it actually ends: `Ctrl-b`
+`:kill-session`, or `exit` out of the pane, then run `concierge` again.
+`--continue` picks the conversation right back up.
+
+If it comes back on a wide terminal, check for a stale override:
+```sh
+grep -rn CONCIERGE_NARROW ~/.zshenv ~/.zprofile ~/.zshrc
+```
+Note that setting `CONCIERGE_NARROW` in `~/.zshrc` does **not** reach a normal
+`concierge` launch (non-interactive login shell — zsh skips `~/.zshrc`), but
+*does* reach `concierge --here`, which makes it look intermittent. Use
+`~/.zshenv`. See [`configuration.md`](configuration.md).
+
 ### Logs growing
 Pane transcripts live in `~/.claude/concierge-logs/` and auto-prune after 60
 days. Delete them anytime; nothing depends on them for resume.
