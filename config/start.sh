@@ -122,7 +122,7 @@ if [ "$NARROW" = "1" ]; then
 fi
 
 # If Claude exits, fall back to an interactive shell so the window persists.
-RUN="$CLAUDE $CONT --model $MODEL --dangerously-skip-permissions $NARROW_FLAG; exec \$SHELL"
+RUN="$CLAUDE $CONT --model $MODEL --dangerously-skip-permissions --chrome $NARROW_FLAG; exec \$SHELL"
 
 T -f "$CONF" new-session -d -s "$SESSION" "$RUN"
 set_version_opts
