@@ -78,6 +78,14 @@ Resume relies on Claude Code's own transcript at
 `~/.claude/projects/<cwd>/*.jsonl`. The Concierge always launches from your home
 directory so the same transcript is found every time.
 
+## Claude in Chrome
+
+`start.sh` launches with `--chrome`, so Claude Code's Chrome integration is on
+in the Concierge window by default. Two things still gate it: the tab has to be
+open in your Chrome, and the extension needs per-site permission the first time
+it touches a domain. To launch without it, remove `--chrome` from the `RUN=`
+line in `~/.config/claude-concierge/start.sh`.
+
 ## Scrollback & logging
 
 - tmux scrollback: `history-limit 50000` (plus iTerm "Unlimited Scrollback").
