@@ -25,22 +25,12 @@ PROJ="$HOME/.claude/projects/$(printf '%s' "$WORKDIR" | sed 's#[/.]#-#g')"
 
 T() { tmux -L "$SOCK" "$@"; }
 
-# Turn a model id into a friendly status-bar label:
-#   claude-fable-5          -> fable 5
-#   claude-opus-4-8         -> opus 4.8
-#   claude-haiku-4-5-2025.. -> haiku 4.5   (trailing date snapshot dropped)
-pretty_model() {
-  local id="${1#claude-}"                    # drop the claude- prefix
-  id="$(printf '%s' "$id" | sed -E 's/-[0-9]{8}$//')"  # drop -YYYYMMDD snapshot
-  local family="${id%%-*}"                    # first token is the family
-  local rest="${id#"$family"}"                # remaining -x-y version tokens
-  rest="${rest#-}"                            # trim leading dash
-  if [ -n "$rest" ]; then
-    printf '%s %s' "$family" "$(printf '%s' "$rest" | tr '-' '.')"
-  else
-    printf '%s' "$family"
-  fi
-}
+# pretty_model() — shared with config/status-model.sh, which formats the same
+# ids live on every status-bar tick. Installed alongside us; fall back to our
+# own directory when running straight out of a checkout.
+LIB="$CFG/model-label.sh"
+[ -f "$LIB" ] || LIB="${0:A:h}/model-label.sh"
+. "$LIB"
 
 # The effort level the running session uses: CONCIERGE_EFFORT wins, else the
 # Claude Code `effortLevel` setting, else a neutral label.
@@ -58,10 +48,15 @@ resolve_effort() {
 
 # Version info for the status-bar header — read fresh on every window open
 # (cheap: one `cat` + one `claude --version` call, not per status-bar tick)
-# and cached as tmux user options; tmux.conf's status-right reads them via
-# #{@concierge_version} / #{@claude_version} / #{@concierge_model} /
-# #{@concierge_effort}. Refreshed on reattach too, so an upgrade (or a model/
-# effort change) since the last window open shows up without killing the session.
+# and cached as tmux user options; tmux.conf's status-right reads the versions
+# via #{@concierge_version} / #{@claude_version}. Refreshed on reattach too, so
+# an upgrade since the last window open shows up without killing the session.
+#
+# @concierge_model / @concierge_effort are seeded here too, but they're no
+# longer what the header displays: status-model.sh reads the live model/effort
+# off the transcript every tick and only falls back to these when there's no
+# assistant turn to read yet. Seeding them is what makes a fresh launch show
+# the launch-time label instead of a blank segment.
 set_version_opts() {
   local cc_version claude_version
   cc_version="$(cat "$CFG/VERSION" 2>/dev/null || echo '?')"
