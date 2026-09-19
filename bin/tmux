@@ -25,16 +25,40 @@
 set -euo pipefail
 
 SOCK_NAME="concierge"
-SELF="$HOME/.local/bin/tmux"
+
+# Canonical path of $1, or nothing if it can't be resolved. (`cd -P` is the
+# fallback for an environment without realpath; it resolves the directory,
+# which is all the PATH scan needs.)
+canon() {
+  realpath "$1" 2>/dev/null && return 0
+  local d
+  d="$(cd -P "$(dirname "$1")" 2>/dev/null && pwd)" || return 0
+  [ -n "$d" ] && printf '%s/%s\n' "$d" "$(basename "$1")"
+  return 0
+}
+
+# Who am I? Our own resolved path — NOT "$HOME/.local/bin/tmux". Deriving
+# identity from $HOME meant that any caller running under a different HOME
+# (a sandbox, CI, `sudo -H`, a launchd agent with its own HOME) failed to
+# recognise the wrapper during the PATH scan below, picked it as the "real"
+# tmux and exec'd itself — an invisible infinite loop, same PID, spinning
+# forever. $HOME has nothing to do with which file this is.
+SELF="$(canon "${BASH_SOURCE[0]}")"
 
 REAL_TMUX=""
 IFS=: read -ra PATH_DIRS <<< "$PATH"
 for dir in "${PATH_DIRS[@]}"; do
   candidate="$dir/tmux"
-  if [ -x "$candidate" ] && [ "$candidate" != "$SELF" ]; then
-    REAL_TMUX="$candidate"
-    break
-  fi
+  [ -x "$candidate" ] || continue
+  # Compare canonical paths, so a symlinked install (or a symlinked Homebrew
+  # tmux) is judged on which FILE it is. A candidate that won't resolve
+  # (dangling symlink) is skipped rather than assumed to be somebody else.
+  resolved="$(canon "$candidate")"
+  [ -n "$resolved" ] || continue
+  if [ -n "$SELF" ] && [ "$resolved" = "$SELF" ]; then continue; fi
+  if [ "$candidate" = "${BASH_SOURCE[0]}" ]; then continue; fi  # never exec us
+  REAL_TMUX="$candidate"
+  break
 done
 if [ -z "$REAL_TMUX" ]; then
   echo "tmux wrapper ($SELF): could not find the real tmux anywhere else on PATH" >&2

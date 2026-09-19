@@ -540,6 +540,76 @@ else
   bad "explicit -L -> was overridden"
 fi
 
+# A foreign $HOME used to be fatal: the wrapper identified itself as
+# "$HOME/.local/bin/tmux", so under any other HOME (sandbox, CI, sudo -H) it
+# failed to spot itself in the PATH scan, picked ITSELF as the real tmux and
+# exec'd in a loop — same PID, spinning forever. These runs are therefore
+# watchdogged: a hang must FAIL the suite, not wedge it (this hung the suite
+# for 40+ minutes on the machine the bug was found on).
+guarded() {  # $1 = seconds, $2.. = command. 124 = still running, killed.
+  local secs="$1"; shift
+  "$@" & local pid=$! i=0
+  while kill -0 "$pid" 2>/dev/null && (( i < secs * 20 )); do sleep 0.05; i=$((i+1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124
+  fi
+  wait "$pid"
+}
+
+rm -f "$WSB/argv.out"
+guarded 10 env -u TMUX WMARK="$WSB/argv.out" HOME="$WSB/nowhere" \
+  PATH="$WSB/home/.local/bin:$WSB/realbin:$PATH" \
+  "$WSB/home/.local/bin/tmux" -L t new-session -d 'sleep 1'
+rc=$?
+if [[ $rc -eq 124 ]]; then
+  bad "foreign \$HOME -> wrapper hung (self-exec loop)"
+elif [[ $rc -eq 0 ]] && [[ -f "$WSB/argv.out" ]] \
+     && [[ "$(sed -n 1p "$WSB/argv.out")" == "-L" ]] \
+     && [[ "$(sed -n 2p "$WSB/argv.out")" == "t" ]]; then
+  ok "foreign \$HOME -> execs the real tmux, returns promptly"
+else
+  bad "foreign \$HOME -> did not exec the real tmux (rc=$rc)"
+fi
+
+# Self-detection must not depend on $HOME existing at all.
+rm -f "$WSB/argv.out"
+guarded 10 env -u HOME -u TMUX WMARK="$WSB/argv.out" \
+  PATH="$WSB/home/.local/bin:$WSB/realbin:$PATH" \
+  "$WSB/home/.local/bin/tmux" new-session -d -s foo
+rc=$?
+if [[ $rc -eq 124 ]]; then
+  bad "unset \$HOME -> wrapper hung (self-exec loop)"
+elif [[ $rc -eq 0 ]] && [[ "$(sed -n 1p "$WSB/argv.out" 2>/dev/null)" == "-L" ]] \
+     && [[ "$(sed -n 2p "$WSB/argv.out" 2>/dev/null)" == "concierge" ]]; then
+  ok "unset \$HOME -> still self-identifies and injects -L concierge"
+else
+  bad "unset \$HOME -> wrapper misbehaved (rc=$rc)"
+fi
+
+# Last resort: when the ONLY tmux on PATH is the wrapper itself, it must say so
+# and exit 127 — never exec itself as a fallback.
+MINI="$WSB/mini"; mkdir -p "$MINI"
+cp "$REPO/bin/tmux" "$MINI/tmux"; chmod +x "$MINI/tmux"
+for t in realpath dirname basename; do
+  p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$MINI/$t"
+done
+mini_out="$WSB/mini.out"
+guarded 10 env -u TMUX HOME="$WSB/nowhere" PATH="$MINI" \
+  "$BASH" "$MINI/tmux" new-session -d -s foo > "$mini_out" 2>&1
+rc=$?
+if [[ $rc -eq 124 ]]; then
+  bad "no other tmux on PATH -> wrapper hung (exec'd itself)"
+elif [[ $rc -eq 127 ]] && grep -q "could not find the real tmux" "$mini_out"; then
+  ok "no other tmux on PATH -> exits 127 instead of exec'ing itself"
+else
+  bad "no other tmux on PATH -> expected 127 + message (rc=$rc)"
+fi
+
+# The old HOME-derived identity must not come back.
+grep -q 'SELF="\$HOME' "$REPO/bin/tmux" \
+  && bad "bin/tmux still derives SELF from \$HOME" \
+  || ok "bin/tmux identifies itself by its own path, not \$HOME"
+
 rm -rf "$WSB"
 
 # 8) doc mode --------------------------------------------------------------
