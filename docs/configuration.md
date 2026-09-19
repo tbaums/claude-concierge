@@ -42,6 +42,18 @@ CONCIERGE_EFFORT=high concierge --here
 
 If neither is set it shows `default`.
 
+## Output style (defaults to Concise)
+
+The Concierge is built for dictating and reading on a phone or in a terminal, so
+a fresh launch seeds Claude Code's built-in **Concise** output style —
+`"outputStyle": "Concise"` in `~/.claude/settings.json`.
+
+It's a *default*, not an override. The key is only written when it's missing (or
+`null`/empty), so the moment you pick your own style with `/output-style <name>`
+— which Claude Code persists to that same file — the Concierge stops seeding and
+your choice survives every later launch. Switching mid-session works normally
+too; nothing is rewritten under a running session.
+
 ## Output width (narrow-display mode)
 
 By default the Concierge uses **the full width of your terminal**. It measures
