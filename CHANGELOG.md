@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-09-19
+
+### Added
+- **New sessions default to Claude's Concise output style.** `start.sh` seeds
+  `"outputStyle": "Concise"` into `~/.claude/settings.json` on a fresh launch via
+  a generalised `ensure_setting KEY VALUE seed|force` helper; a value you have
+  already set is left alone. (#10)
+- **Live model/effort in the status bar.** The header used to be written once at
+  launch and went stale on every in-session `/model` or effort change. It now
+  reads the live values off the session transcript through the new pure-shell
+  `config/status-model.sh`, refreshed from `status-right` every 5s. (#4)
+
+### Fixed
+- **`bin/tmux` wrapper no longer exec-loops under a foreign `HOME`.** It
+  identified itself by `$HOME/.local/bin/tmux`, so any caller with a different
+  `HOME` (sandboxes, CI, launchd agents, `sudo -H`) picked the wrapper itself as
+  the "real" tmux and re-exec'd forever, hanging `test/run.sh` and the caller. It
+  now resolves its own canonical path (`BASH_SOURCE` via `realpath`, `cd -P`
+  fallback) and canonicalises every PATH candidate. (#14)
+
+### Changed
+- **`start.sh` no longer needs python3.** The one-shot `showMessageTimestamps`
+  edit to `settings.json` is now pure shell (`jq` when present, `grep`/`sed`/`awk`
+  fallback), with tests. (#3)
+
 ## [0.6.0] — 2026-09-16
 
 ### Added
@@ -161,6 +186,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.7.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.5.0
 [0.4.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.4.1
