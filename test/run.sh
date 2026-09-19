@@ -144,6 +144,113 @@ grep -qi 'ipad' "$REPO/config/start.sh" \
   && bad "start.sh still asserts 'iPad' in the injected prompt" \
   || ok "injected prompt describes a viewport, not a device"
 
+# 3d) showMessageTimestamps tweak (pure shell — no python3 in the launch path)
+echo "› settings.json timestamp tweak"
+grep -q 'python3' "$REPO/config/start.sh" \
+  && bad "start.sh still shells out to python3" \
+  || ok "start.sh has no python3 dependency"
+
+# Source the real function out of start.sh so we test the shipped code.
+ETS="$(mktemp)"
+sed -n '/^ensure_timestamps_setting()/,/^}/p' "$REPO/config/start.sh" > "$ETS"
+# shellcheck disable=SC1090
+. "$ETS"
+# A PATH holding the standard userland but deliberately NO jq, so the pure-shell
+# fallback is exercised even on a machine that has jq installed.
+NOJQDIR="$(mktemp -d)"
+for t in grep sed awk tr mv rm mkdir; do
+  p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$NOJQDIR/$t"
+done
+
+ets_run() {  # $1 = sandbox HOME, $2 = jq|nojq. Subshell: no env leaks into the runner.
+  if [[ "$2" == nojq ]]; then ( export HOME="$1" PATH="$NOJQDIR"; ensure_timestamps_setting )
+  else                        ( export HOME="$1"; ensure_timestamps_setting ); fi
+}
+ets_box() {  # $1 = initial settings.json content ("" = no file), $2 = "empty" to touch a 0-byte file
+  local d; d="$(mktemp -d)"; mkdir -p "$d/.claude"
+  [[ -n "${1-}" ]] && printf '%s' "$1" > "$d/.claude/settings.json"
+  [[ "${2-}" == empty ]] && : > "$d/.claude/settings.json"
+  printf '%s' "$d"
+}
+ets_val() {  # top-level showMessageTimestamps as JSON, "<none>", or INVALID
+  python3 - "$1" <<'PY' 2>/dev/null || printf 'INVALID'
+import json, sys
+print(json.dumps(json.load(open(sys.argv[1])).get("showMessageTimestamps", "<none>")), end="")
+PY
+}
+ets_rest() {  # every OTHER key, canonicalised — proves nothing else was touched
+  python3 - "$1" <<'PY' 2>/dev/null || printf 'INVALID'
+import json, sys
+d = json.load(open(sys.argv[1])); d.pop("showMessageTimestamps", None)
+print(json.dumps(d, sort_keys=True), end="")
+PY
+}
+
+WITHOUT=$'{\n  "model": "claude-opus-5",\n  "effortLevel": "high"\n}\n'
+WITHFALSE=$'{\n  "model": "claude-opus-5",\n  "showMessageTimestamps": false\n}\n'
+WITHTRUE=$'{\n  "model": "claude-opus-5",\n  "showMessageTimestamps": true\n}\n'
+NESTED=$'{\n  "model": "claude-opus-5",\n  "nested": {\n    "showMessageTimestamps": false\n  }\n}\n'
+
+for mode in jq nojq; do
+  if [[ "$mode" == jq ]] && ! have jq; then
+    ok "[jq] jq not installed — opportunistic jq path skipped"
+    continue
+  fi
+  # Missing file -> created, valid JSON, key true.
+  S="$(ets_box "")"; ets_run "$S" "$mode"
+  [[ "$(ets_val "$S/.claude/settings.json")" == "true" ]] \
+    && ok "[$mode] missing settings.json -> created with the key true" \
+    || bad "[$mode] missing settings.json not handled"
+  rm -rf "$S"
+  # Zero-byte file -> same as missing.
+  S="$(ets_box "" empty)"; ets_run "$S" "$mode"
+  [[ "$(ets_val "$S/.claude/settings.json")" == "true" ]] \
+    && ok "[$mode] zero-byte settings.json -> key true" \
+    || bad "[$mode] zero-byte settings.json not handled"
+  rm -rf "$S"
+  # Key absent -> added, every pre-existing key preserved.
+  S="$(ets_box "$WITHOUT")"; ets_run "$S" "$mode"
+  [[ "$(ets_val "$S/.claude/settings.json")" == "true" ]] \
+    && ok "[$mode] key absent -> added as true" || bad "[$mode] key absent -> not added"
+  [[ "$(ets_rest "$S/.claude/settings.json")" == '{"effortLevel": "high", "model": "claude-opus-5"}' ]] \
+    && ok "[$mode] other keys preserved when adding" || bad "[$mode] other keys lost when adding"
+  rm -rf "$S"
+  # Key false -> flipped, other keys untouched.
+  S="$(ets_box "$WITHFALSE")"; ets_run "$S" "$mode"
+  [[ "$(ets_val "$S/.claude/settings.json")" == "true" ]] \
+    && ok "[$mode] false -> flipped to true" || bad "[$mode] false -> not flipped"
+  [[ "$(ets_rest "$S/.claude/settings.json")" == '{"model": "claude-opus-5"}' ]] \
+    && ok "[$mode] other keys preserved when flipping" || bad "[$mode] other keys lost when flipping"
+  rm -rf "$S"
+  # Already true -> byte-for-byte no-op (never reformat someone's file).
+  S="$(ets_box "$WITHTRUE")"; F="$S/.claude/settings.json"
+  cp "$F" "$S/before"; ets_run "$S" "$mode"
+  cmp -s "$S/before" "$F" && ok "[$mode] already true -> file unchanged byte-for-byte" \
+    || bad "[$mode] already true -> file was rewritten"
+  rm -rf "$S"
+  # Same-named key NESTED only: the top-level key must still be added, and the
+  # nested one left alone (the fallback's patterns anchor on the 2-space indent).
+  S="$(ets_box "$NESTED")"; ets_run "$S" "$mode"
+  [[ "$(ets_val "$S/.claude/settings.json")" == "true" ]] \
+    && ok "[$mode] nested same-named key -> top-level key still added" \
+    || bad "[$mode] nested same-named key -> top-level key missing"
+  [[ "$(ets_rest "$S/.claude/settings.json")" == '{"model": "claude-opus-5", "nested": {"showMessageTimestamps": false}}' ]] \
+    && ok "[$mode] nested key left untouched" || bad "[$mode] nested key was rewritten"
+  rm -rf "$S"
+  # Malformed JSON: the launcher runs under `set -e`, so the block must not
+  # abort it — reproduce the shipped call site verbatim and check we get past it.
+  S="$(ets_box '{ "model": "x",')"
+  survived="$( set -e
+               export HOME="$S"
+               if [[ "$mode" == nojq ]]; then export PATH="$NOJQDIR"; fi
+               ensure_timestamps_setting 2>/dev/null || true
+               printf 'yes' )"
+  [[ "$survived" == yes ]] && ok "[$mode] malformed JSON -> launch still proceeds" \
+    || bad "[$mode] malformed JSON -> aborted the launch path"
+  rm -rf "$S"
+done
+rm -f "$ETS"; rm -rf "$NOJQDIR"
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"

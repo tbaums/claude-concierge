@@ -93,20 +93,63 @@ fi
 # timestamps (⌘⇧E) reflect tmux redraws, not when a message actually arrived.
 # Claude Code has a native setting for it — ensure it idempotently (only
 # rewrites the file when the key isn't already true).
-python3 - <<'PY' 2>/dev/null || true
-import json, os
-p = os.path.expanduser("~/.claude/settings.json")
-try:
-    with open(p) as f:
-        s = json.load(f)
-except Exception:
-    s = {}
-if s.get("showMessageTimestamps") is not True:
-    s["showMessageTimestamps"] = True
-    with open(p, "w") as f:
-        json.dump(s, f, indent=2)
-        f.write("\n")
-PY
+#
+# Pure shell, no interpreter: the launch path depends only on zsh + the standard
+# macOS userland. `jq` is used *opportunistically* when it happens to be on PATH
+# (robust against any JSON shape); otherwise a best-effort grep/sed/awk tweak
+# handles the flat, human-edited object settings.json is in practice. Anything
+# unexpected (malformed JSON, unwritable file) returns non-zero and leaves the
+# file alone — the caller swallows it so a failure never blocks launch.
+ensure_timestamps_setting() {
+  local f="$HOME/.claude/settings.json"
+  local dir="${f%/*}"
+  local tmp="$f.concierge.$$"
+  local minimal=$'{\n  "showMessageTimestamps": true\n}\n'
+
+  [ -d "$dir" ] || mkdir -p "$dir" || return 1
+
+  if command -v jq >/dev/null 2>&1; then
+    # Missing or zero-byte: nothing to preserve, write the minimal object.
+    [ -s "$f" ] || { printf %s "$minimal" > "$f"; return; }
+    # Already true → byte-for-byte no-op (never reformat someone's file).
+    jq -e '.showMessageTimestamps == true' "$f" >/dev/null 2>&1 && return 0
+    jq '.showMessageTimestamps = true' "$f" > "$tmp" 2>/dev/null \
+      && mv "$tmp" "$f" && return 0
+    rm -f "$tmp"                      # malformed JSON: leave the file untouched
+    return 1
+  fi
+
+  # ── Fallback: no jq ───────────────────────────────────────────────────────
+  # Every pattern anchors on the 2-space top-level indent, so a same-named key
+  # nested inside another object can't produce a false match.
+  [ -s "$f" ] || { printf %s "$minimal" > "$f"; return; }
+  local squashed
+  squashed="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
+  case "$squashed" in
+    ''|'{}') printf %s "$minimal" > "$f"; return ;;  # blank / empty object
+    '{'*)    ;;                                      # looks like a JSON object
+    *)       return 1 ;;                             # anything else: hands off
+  esac
+  # Already true → no rewrite.
+  grep -qE '^  "showMessageTimestamps"[[:space:]]*:[[:space:]]*true[[:space:]]*,?$' "$f" \
+    && return 0
+  if grep -qE '^  "showMessageTimestamps"[[:space:]]*:' "$f"; then
+    # Present with some other value → flip it in place, keep the comma as found.
+    sed -E 's/^(  "showMessageTimestamps"[[:space:]]*:[[:space:]]*)[^,]*(,?)$/\1true\2/' \
+      "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" && return 0
+  elif grep -qE '"[^"]*"[[:space:]]*:' "$f"; then
+    # Absent → insert as the first key, right after the opening brace.
+    awk 'ins != 1 && index($0, "{") {
+           p = index($0, "{")
+           printf "%s\n  \"showMessageTimestamps\": true,%s\n", substr($0, 1, p), substr($0, p + 1)
+           ins = 1; next
+         }
+         { print }' "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" && return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+ensure_timestamps_setting 2>/dev/null || true
 
 # Default the concierge to Fable (your global default model is left untouched).
 # Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
