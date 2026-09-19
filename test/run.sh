@@ -266,15 +266,15 @@ grep -qi 'ipad' "$REPO/config/start.sh" \
   && bad "start.sh still asserts 'iPad' in the injected prompt" \
   || ok "injected prompt describes a viewport, not a device"
 
-# 3d) showMessageTimestamps tweak (pure shell — no python3 in the launch path)
-echo "› settings.json timestamp tweak"
+# 3d) settings.json seeding (pure shell — no python3 in the launch path) -----
+echo "› settings.json seeding"
 grep -q 'python3' "$REPO/config/start.sh" \
   && bad "start.sh still shells out to python3" \
   || ok "start.sh has no python3 dependency"
 
 # Source the real function out of start.sh so we test the shipped code.
 ETS="$(mktemp)"
-sed -n '/^ensure_timestamps_setting()/,/^}/p' "$REPO/config/start.sh" > "$ETS"
+sed -n '/^ensure_setting()/,/^}/p' "$REPO/config/start.sh" > "$ETS"
 # shellcheck disable=SC1090
 . "$ETS"
 # A PATH holding the standard userland but deliberately NO jq, so the pure-shell
@@ -284,9 +284,12 @@ for t in grep sed awk tr mv rm mkdir; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$NOJQDIR/$t"
 done
 
-ets_run() {  # $1 = sandbox HOME, $2 = jq|nojq. Subshell: no env leaks into the runner.
-  if [[ "$2" == nojq ]]; then ( export HOME="$1" PATH="$NOJQDIR"; ensure_timestamps_setting )
-  else                        ( export HOME="$1"; ensure_timestamps_setting ); fi
+ets_run() {  # $1 = HOME, $2 = jq|nojq, $3.. = ensure_setting args (default: the
+  # timestamps call). Subshell: no env leaks into the runner.
+  local -a call=( "${@:3}" )
+  [[ ${#call[@]} -eq 0 ]] && call=( showMessageTimestamps true force )
+  if [[ "$2" == nojq ]]; then ( export HOME="$1" PATH="$NOJQDIR"; ensure_setting "${call[@]}" )
+  else                        ( export HOME="$1"; ensure_setting "${call[@]}" ); fi
 }
 ets_box() {  # $1 = initial settings.json content ("" = no file), $2 = "empty" to touch a 0-byte file
   local d; d="$(mktemp -d)"; mkdir -p "$d/.claude"
@@ -294,16 +297,17 @@ ets_box() {  # $1 = initial settings.json content ("" = no file), $2 = "empty" t
   [[ "${2-}" == empty ]] && : > "$d/.claude/settings.json"
   printf '%s' "$d"
 }
-ets_val() {  # top-level showMessageTimestamps as JSON, "<none>", or INVALID
-  python3 - "$1" <<'PY' 2>/dev/null || printf 'INVALID'
+ets_val() {  # $1 = file, $2 = key (default showMessageTimestamps) -> JSON value,
+  # "<none>" when absent, or INVALID when the file doesn't parse
+  python3 - "$1" "${2:-showMessageTimestamps}" <<'PY' 2>/dev/null || printf 'INVALID'
 import json, sys
-print(json.dumps(json.load(open(sys.argv[1])).get("showMessageTimestamps", "<none>")), end="")
+print(json.dumps(json.load(open(sys.argv[1])).get(sys.argv[2], "<none>")), end="")
 PY
 }
 ets_rest() {  # every OTHER key, canonicalised — proves nothing else was touched
-  python3 - "$1" <<'PY' 2>/dev/null || printf 'INVALID'
+  python3 - "$1" "${2:-showMessageTimestamps}" <<'PY' 2>/dev/null || printf 'INVALID'
 import json, sys
-d = json.load(open(sys.argv[1])); d.pop("showMessageTimestamps", None)
+d = json.load(open(sys.argv[1])); d.pop(sys.argv[2], None)
 print(json.dumps(d, sort_keys=True), end="")
 PY
 }
@@ -312,6 +316,8 @@ WITHOUT=$'{\n  "model": "claude-opus-5",\n  "effortLevel": "high"\n}\n'
 WITHFALSE=$'{\n  "model": "claude-opus-5",\n  "showMessageTimestamps": false\n}\n'
 WITHTRUE=$'{\n  "model": "claude-opus-5",\n  "showMessageTimestamps": true\n}\n'
 NESTED=$'{\n  "model": "claude-opus-5",\n  "nested": {\n    "showMessageTimestamps": false\n  }\n}\n'
+WITHSTYLE=$'{\n  "model": "claude-opus-5",\n  "outputStyle": "Explanatory"\n}\n'
+NESTEDSTYLE=$'{\n  "model": "claude-opus-5",\n  "nested": {\n    "outputStyle": "Learning"\n  }\n}\n'
 
 for mode in jq nojq; do
   if [[ "$mode" == jq ]] && ! have jq; then
@@ -365,13 +371,83 @@ for mode in jq nojq; do
   survived="$( set -e
                export HOME="$S"
                if [[ "$mode" == nojq ]]; then export PATH="$NOJQDIR"; fi
-               ensure_timestamps_setting 2>/dev/null || true
+               ensure_setting showMessageTimestamps true force 2>/dev/null || true
+               ensure_setting outputStyle '"Concise"' seed 2>/dev/null || true
                printf 'yes' )"
   [[ "$survived" == yes ]] && ok "[$mode] malformed JSON -> launch still proceeds" \
     || bad "[$mode] malformed JSON -> aborted the launch path"
   rm -rf "$S"
+
+  # ── outputStyle: SEEDED, not forced ─────────────────────────────────────
+  # A default for a fresh install, but /output-style writes back to this same
+  # file, so a style the user picked must survive the next launch untouched.
+  # Missing file -> created with the default style.
+  S="$(ets_box "")"; ets_run "$S" "$mode" outputStyle '"Concise"' seed
+  [[ "$(ets_val "$S/.claude/settings.json" outputStyle)" == '"Concise"' ]] \
+    && ok "[$mode] missing settings.json -> outputStyle Concise" \
+    || bad "[$mode] missing settings.json -> outputStyle not seeded"
+  rm -rf "$S"
+  # Key absent -> seeded, every pre-existing key preserved.
+  S="$(ets_box "$WITHOUT")"; ets_run "$S" "$mode" outputStyle '"Concise"' seed
+  [[ "$(ets_val "$S/.claude/settings.json" outputStyle)" == '"Concise"' ]] \
+    && ok "[$mode] outputStyle absent -> seeded Concise" \
+    || bad "[$mode] outputStyle absent -> not seeded"
+  [[ "$(ets_rest "$S/.claude/settings.json" outputStyle)" == '{"effortLevel": "high", "model": "claude-opus-5"}' ]] \
+    && ok "[$mode] other keys preserved when seeding outputStyle" \
+    || bad "[$mode] other keys lost when seeding outputStyle"
+  rm -rf "$S"
+  # The user's own style wins — forever, not just for this session.
+  S="$(ets_box "$WITHSTYLE")"; F="$S/.claude/settings.json"
+  cp "$F" "$S/before"; ets_run "$S" "$mode" outputStyle '"Concise"' seed
+  [[ "$(ets_val "$F" outputStyle)" == '"Explanatory"' ]] \
+    && ok "[$mode] existing outputStyle is not overwritten" \
+    || bad "[$mode] existing outputStyle was overwritten"
+  cmp -s "$S/before" "$F" && ok "[$mode] existing outputStyle -> file unchanged byte-for-byte" \
+    || bad "[$mode] existing outputStyle -> file was rewritten"
+  rm -rf "$S"
+  # null / "" count as unset: seed over them.
+  for empty in 'null' '""'; do
+    S="$(ets_box "$(printf '{\n  "model": "x",\n  "outputStyle": %s\n}\n' "$empty")")"
+    ets_run "$S" "$mode" outputStyle '"Concise"' seed
+    [[ "$(ets_val "$S/.claude/settings.json" outputStyle)" == '"Concise"' ]] \
+      && ok "[$mode] outputStyle $empty -> treated as unset, seeded" \
+      || bad "[$mode] outputStyle $empty -> not seeded"
+    rm -rf "$S"
+  done
+  # A same-named key nested elsewhere must not read as "already set".
+  S="$(ets_box "$NESTEDSTYLE")"; ets_run "$S" "$mode" outputStyle '"Concise"' seed
+  [[ "$(ets_val "$S/.claude/settings.json" outputStyle)" == '"Concise"' ]] \
+    && ok "[$mode] nested outputStyle -> top-level key still seeded" \
+    || bad "[$mode] nested outputStyle -> top-level key missing"
+  [[ "$(ets_rest "$S/.claude/settings.json" outputStyle)" == '{"model": "claude-opus-5", "nested": {"outputStyle": "Learning"}}' ]] \
+    && ok "[$mode] nested outputStyle left untouched" || bad "[$mode] nested outputStyle rewritten"
+  rm -rf "$S"
+
+  # Both shipped call sites, in order, against a virgin HOME: the two settings
+  # coexist and the result is still valid JSON.
+  S="$(ets_box "")"
+  ets_run "$S" "$mode" showMessageTimestamps true force
+  ets_run "$S" "$mode" outputStyle '"Concise"' seed
+  F="$S/.claude/settings.json"
+  [[ "$(ets_val "$F")" == "true" && "$(ets_val "$F" outputStyle)" == '"Concise"' ]] \
+    && ok "[$mode] fresh launch seeds both settings, valid JSON" \
+    || bad "[$mode] fresh launch did not seed both settings"
+  rm -rf "$S"
 done
 rm -f "$ETS"; rm -rf "$NOJQDIR"
+
+# Placement: the seeding must sit on the fresh-launch path, AFTER the reattach
+# exec — otherwise reattaching a live session would rewrite settings under it.
+att="$(grep -n 'exec env TMUX= tmux -L "\$SOCK" attach' "$REPO/config/start.sh" | head -1 | cut -d: -f1)"
+seed="$(grep -n '^ensure_setting ' "$REPO/config/start.sh" | head -1 | cut -d: -f1)"
+[[ -n "$att" && -n "$seed" && "$seed" -gt "$att" ]] \
+  && ok "seeding runs only on the fresh-launch path (after the reattach exec)" \
+  || bad "seeding is not behind the reattach exec (att=$att seed=$seed)"
+# Both call sites are actually wired up, with the intended modes.
+grep -q '^ensure_setting showMessageTimestamps true force' "$REPO/config/start.sh" \
+  && ok "showMessageTimestamps is force-applied every launch" || bad "timestamps call site missing"
+grep -q "^ensure_setting outputStyle '\"Concise\"' seed" "$REPO/config/start.sh" \
+  && ok "outputStyle is seeded (not forced)" || bad "outputStyle call site missing"
 
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"

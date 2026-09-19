@@ -83,11 +83,24 @@ elif ls "$PROJ"/*.jsonl >/dev/null 2>&1; then
   CONT="--continue"
 fi
 
-# Timestamp every Claude response. This must live at the Claude level:
-# tmux can't annotate an app's output stream per-message, and iTerm's row
-# timestamps (⌘⇧E) reflect tmux redraws, not when a message actually arrived.
-# Claude Code has a native setting for it — ensure it idempotently (only
-# rewrites the file when the key isn't already true).
+# Claude Code settings the concierge wants in place before the session starts.
+# Both live in ~/.claude/settings.json; this runs on the fresh-launch path only
+# (the reattach above already exec'd), so a live session is never rewritten
+# under itself.
+#
+# Two modes, deliberately different:
+#
+#   force — the concierge owns this setting and re-asserts it every launch.
+#           `showMessageTimestamps` must live at the Claude level: tmux can't
+#           annotate an app's output stream per-message, and iTerm's row
+#           timestamps (⌘⇧E) reflect tmux redraws, not when a message actually
+#           arrived.
+#   seed  — a default, only applied when the key is absent (or null/empty).
+#           `outputStyle` is a native, persistent user preference: running
+#           `/output-style <name>` writes back to this same file. Concise suits
+#           the concierge's dictation-first, read-it-on-a-phone workflow, so we
+#           supply it out of the box — but once you've picked your own style the
+#           next launch must not fight you for it.
 #
 # Pure shell, no interpreter: the launch path depends only on zsh + the standard
 # macOS userland. `jq` is used *opportunistically* when it happens to be on PATH
@@ -95,20 +108,29 @@ fi
 # handles the flat, human-edited object settings.json is in practice. Anything
 # unexpected (malformed JSON, unwritable file) returns non-zero and leaves the
 # file alone — the caller swallows it so a failure never blocks launch.
-ensure_timestamps_setting() {
+ensure_setting() {                  # $1 = key, $2 = JSON value, $3 = force|seed
+  local key="$1" val="$2" mode="$3"
   local f="$HOME/.claude/settings.json"
   local dir="${f%/*}"
   local tmp="$f.concierge.$$"
-  local minimal=$'{\n  "showMessageTimestamps": true\n}\n'
+  local minimal
+  minimal="$(printf '{\n  "%s": %s\n}' "$key" "$val")"
 
   [ -d "$dir" ] || mkdir -p "$dir" || return 1
 
   if command -v jq >/dev/null 2>&1; then
     # Missing or zero-byte: nothing to preserve, write the minimal object.
-    [ -s "$f" ] || { printf %s "$minimal" > "$f"; return; }
-    # Already true → byte-for-byte no-op (never reformat someone's file).
-    jq -e '.showMessageTimestamps == true' "$f" >/dev/null 2>&1 && return 0
-    jq '.showMessageTimestamps = true' "$f" > "$tmp" 2>/dev/null \
+    [ -s "$f" ] || { printf '%s\n' "$minimal" > "$f"; return; }
+    if [ "$mode" = seed ]; then
+      # Any real value already there is the user's — leave the file alone.
+      jq -e --arg k "$key" 'has($k) and .[$k] != null and .[$k] != ""' \
+        "$f" >/dev/null 2>&1 && return 0
+    else
+      # Already the wanted value → byte-for-byte no-op (never reformat a file).
+      jq -e --arg k "$key" --argjson v "$val" '.[$k] == $v' \
+        "$f" >/dev/null 2>&1 && return 0
+    fi
+    jq --arg k "$key" --argjson v "$val" '.[$k] = $v' "$f" > "$tmp" 2>/dev/null \
       && mv "$tmp" "$f" && return 0
     rm -f "$tmp"                      # malformed JSON: leave the file untouched
     return 1
@@ -116,35 +138,41 @@ ensure_timestamps_setting() {
 
   # ── Fallback: no jq ───────────────────────────────────────────────────────
   # Every pattern anchors on the 2-space top-level indent, so a same-named key
-  # nested inside another object can't produce a false match.
-  [ -s "$f" ] || { printf %s "$minimal" > "$f"; return; }
+  # nested inside another object can't produce a false match. The keys and
+  # values we pass are plain literals, with no regex metacharacters to escape.
+  [ -s "$f" ] || { printf '%s\n' "$minimal" > "$f"; return; }
   local squashed
   squashed="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
   case "$squashed" in
-    ''|'{}') printf %s "$minimal" > "$f"; return ;;  # blank / empty object
-    '{'*)    ;;                                      # looks like a JSON object
-    *)       return 1 ;;                             # anything else: hands off
+    ''|'{}') printf '%s\n' "$minimal" > "$f"; return ;;  # blank / empty object
+    '{'*)    ;;                                          # looks like an object
+    *)       return 1 ;;                                 # anything else: hands off
   esac
-  # Already true → no rewrite.
-  grep -qE '^  "showMessageTimestamps"[[:space:]]*:[[:space:]]*true[[:space:]]*,?$' "$f" \
-    && return 0
-  if grep -qE '^  "showMessageTimestamps"[[:space:]]*:' "$f"; then
-    # Present with some other value → flip it in place, keep the comma as found.
-    sed -E 's/^(  "showMessageTimestamps"[[:space:]]*:[[:space:]]*)[^,]*(,?)$/\1true\2/' \
+  if grep -qE "^  \"$key\"[[:space:]]*:" "$f"; then
+    if [ "$mode" = seed ]; then
+      # Present with a real value → hands off. null / "" counts as unset.
+      grep -qE "^  \"$key\"[[:space:]]*:[[:space:]]*(null|\"\")[[:space:]]*,?$" "$f" \
+        || return 0
+    else
+      grep -qE "^  \"$key\"[[:space:]]*:[[:space:]]*$val[[:space:]]*,?$" "$f" && return 0
+    fi
+    # Replace the value in place, keeping the trailing comma as found.
+    sed -E "s/^(  \"$key\"[[:space:]]*:[[:space:]]*)[^,]*(,?)$/\1$val\2/" \
       "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" && return 0
   elif grep -qE '"[^"]*"[[:space:]]*:' "$f"; then
     # Absent → insert as the first key, right after the opening brace.
-    awk 'ins != 1 && index($0, "{") {
+    awk -v ins="  \"$key\": $val," 'done != 1 && index($0, "{") {
            p = index($0, "{")
-           printf "%s\n  \"showMessageTimestamps\": true,%s\n", substr($0, 1, p), substr($0, p + 1)
-           ins = 1; next
+           printf "%s\n%s%s\n", substr($0, 1, p), ins, substr($0, p + 1)
+           done = 1; next
          }
          { print }' "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" && return 0
   fi
   rm -f "$tmp"
   return 1
 }
-ensure_timestamps_setting 2>/dev/null || true
+ensure_setting showMessageTimestamps true force 2>/dev/null || true
+ensure_setting outputStyle '"Concise"' seed 2>/dev/null || true
 
 # Default the concierge to Fable (your global default model is left untouched).
 # Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
