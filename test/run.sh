@@ -23,7 +23,8 @@ echo "repo: $REPO"
 echo "› files"
 for f in LICENSE README.md RELEASING.md CHANGELOG.md install.sh VERSION \
          bin/concierge bin/tmux bin/doc bin/doc-view config/tmux.conf \
-         config/start.sh config/clip.sh \
+         config/start.sh config/clip.sh config/model-label.sh \
+         config/status-model.sh \
          config/logsink.sh config/iterm-profile.py; do
   [[ -f "$REPO/$f" ]] && ok "exists: $f" || bad "missing: $f"
 done
@@ -33,7 +34,7 @@ echo "› syntax"
 for f in bin/concierge config/start.sh bin/doc bin/doc-view; do
   zsh -n "$REPO/$f" 2>/dev/null && ok "zsh -n $f" || bad "zsh -n $f"
 done
-for f in config/clip.sh config/logsink.sh; do
+for f in config/clip.sh config/logsink.sh config/model-label.sh config/status-model.sh; do
   sh -n "$REPO/$f" 2>/dev/null && ok "sh -n $f" || bad "sh -n $f"
 done
 bash -n "$REPO/install.sh" && ok "bash -n install.sh" || bad "bash -n install.sh"
@@ -69,9 +70,12 @@ fi
 
 # 3b) status header: model prettifier + effort resolver ---------------------
 echo "› status header (model + effort)"
-# Source just the pure helpers out of start.sh so we test the real code.
+# Source the real code: pretty_model now lives in its own file (shared with
+# status-model.sh), resolve_effort is still start.sh's.
+# shellcheck disable=SC1090
+. "$REPO/config/model-label.sh"
 HELPERS="$(mktemp)"
-sed -n '/^pretty_model()/,/^}/p;/^resolve_effort()/,/^}/p' "$REPO/config/start.sh" > "$HELPERS"
+sed -n '/^resolve_effort()/,/^}/p' "$REPO/config/start.sh" > "$HELPERS"
 # shellcheck disable=SC1090
 . "$HELPERS"
 check_model() {
@@ -94,11 +98,129 @@ printf '{\n  "model": "x",\n  "effortLevel": "xhigh"\n}\n' > "$ESB/.claude/setti
 [[ "$(HOME="$ESB/nope" CONCIERGE_EFFORT="" resolve_effort)" == "default" ]] \
   && ok "resolve_effort falls back to 'default'" || bad "resolve_effort missing fallback"
 rm -rf "$ESB"; rm -f "$HELPERS"
-# tmux.conf wires both new options into the status bar
-grep -q '@concierge_model' "$REPO/config/tmux.conf" \
-  && ok "status-right references @concierge_model" || bad "status-right missing @concierge_model"
-grep -q '@concierge_effort' "$REPO/config/tmux.conf" \
-  && ok "status-right references @concierge_effort" || bad "status-right missing @concierge_effort"
+# The model · effort segment must be a LIVE #() job, not a static user option —
+# a static one is exactly the staleness this replaced. The version segments, on
+# the other hand, stay options (set once per window open, by design).
+grep -q 'status-right .*#(\$STATUS_MODEL' "$REPO/config/tmux.conf" \
+  && ok "status-right runs status-model.sh live" || bad "status-right does not run status-model.sh"
+grep -q 'status-right .*#{@concierge_model}' "$REPO/config/tmux.conf" \
+  && bad "status-right still shows the static @concierge_model option" \
+  || ok "status-right no longer shows the static model option"
+grep -q 'status-right .*#{@concierge_version}.*#{@claude_version}' "$REPO/config/tmux.conf" \
+  && ok "version segments unchanged" || bad "version segments changed"
+# start.sh still seeds the options — that's the fresh-launch fallback.
+grep -q 'set-option -t "\$SESSION" @concierge_model' "$REPO/config/start.sh" \
+  && ok "start.sh still seeds @concierge_model (launch-time fallback)" \
+  || bad "start.sh no longer seeds @concierge_model"
+
+# 3b2) live model/effort: read off the session transcript, every tick ---------
+echo "› live model/effort (transcript)"
+SM="$REPO/config/status-model.sh"
+# No interpreter may sneak back in (start.sh's python3 went in #3).
+grep -qE '\b(python3?|jq|perl|node|ruby)\b' "$SM" \
+  && bad "status-model.sh introduces an interpreter dependency" \
+  || ok "status-model.sh stays pure shell (no python/jq/perl/node)"
+
+# Sandbox: a fake $HOME holding a fake transcript dir, plus a stub `tmux` so a
+# test can NEVER read or write options on a real tmux server. The stub answers
+# show-options from $STUB_OPTS and logs every set-option to $STUB_SETLOG.
+SMTMP="$(mktemp -d)"
+STUBDIR="$SMTMP/stub"; mkdir -p "$STUBDIR"
+cat > "$STUBDIR/tmux" <<'EOF'
+#!/bin/sh
+# show-options -qv -t <session> <@opt>   |   set-option -t <session> <@opt> <value>
+case "$1" in
+  show-options)
+    case "$5" in
+      @concierge_model)  printf '%s' "${STUB_MODEL:-}" ;;
+      @concierge_effort) printf '%s' "${STUB_EFFORT:-}" ;;
+    esac ;;
+  set-option) printf '%s=%s\n' "$4" "$5" >> "$STUB_SETLOG" ;;
+esac
+EOF
+chmod +x "$STUBDIR/tmux"
+
+sm_proj() { printf '%s/.claude/projects/%s' "$1" "$(printf '%s' "$1" | sed 's#[/.]#-#g')"; }
+sm_box() {  # prints a fresh sandbox HOME with an empty transcript dir
+  local d; d="$(mktemp -d "$SMTMP/home.XXXXXX")"; mkdir -p "$(sm_proj "$d")"; printf '%s' "$d"
+}
+sm_line() {  # $1 = model ("" = omit), $2 = effort ("" = omit) -> one assistant JSONL line
+  local m="" e=""
+  [[ -n "${1-}" ]] && m="\"model\":\"$1\","
+  [[ -n "${2-}" ]] && e="\"effort\":\"$2\","
+  printf '{"parentUuid":"p","message":{%s"role":"assistant","content":[]},%s"type":"assistant","uuid":"u"}\n' \
+    "$m" "$e"
+}
+sm_run() {  # $1 = sandbox HOME; the stub tmux shadows the real one
+  ( export HOME="$1" PATH="$STUBDIR:$PATH" STUB_SETLOG="$SMTMP/setlog" \
+           STUB_MODEL="${FALLBACK_MODEL-}" STUB_EFFORT="${FALLBACK_EFFORT-}"
+    sh "$SM" )
+}
+FALLBACK_MODEL="fable 5"; FALLBACK_EFFORT="medium"   # what start.sh seeded
+
+# The headline bug: the transcript says opus 4.8, so the header must say so —
+# whatever the launch-time option (fable 5) still holds.
+S="$(sm_box)"; sm_line claude-opus-4-8 xhigh > "$(sm_proj "$S")/a.jsonl"
+[[ "$(sm_run "$S")" == "opus 4.8 · xhigh" ]] \
+  && ok "live model+effort win over the stale launch-time option" \
+  || bad "live model+effort not used (got '$(sm_run "$S")')"
+# …and a later turn with a different model is picked up with no restart.
+sm_line claude-sonnet-5 low >> "$(sm_proj "$S")/a.jsonl"
+[[ "$(sm_run "$S")" == "sonnet 5 · low" ]] \
+  && ok "a mid-session model switch shows up on the next tick" \
+  || bad "mid-session switch not picked up (got '$(sm_run "$S")')"
+
+# Fresh launch, no transcript yet -> the launch-time option, never blank.
+S="$(sm_box)"
+[[ "$(sm_run "$S")" == "fable 5 · medium" ]] \
+  && ok "no transcript -> launch-time model/effort" || bad "no transcript -> wrong fallback"
+
+# Newest transcript wins (a resumed session leaves older files behind).
+S="$(sm_box)"; P="$(sm_proj "$S")"
+sm_line claude-haiku-4-5-20251001 high > "$P/old.jsonl"
+sm_line claude-opus-4-8 xhigh > "$P/new.jsonl"
+touch -t 202001010000 "$P/old.jsonl"
+[[ "$(sm_run "$S")" == "opus 4.8 · xhigh" ]] \
+  && ok "most-recently-modified transcript is the one read" \
+  || bad "older transcript won (got '$(sm_run "$S")')"
+
+# A turn without an effort field -> the same neutral label resolve_effort uses.
+S="$(sm_box)"; sm_line claude-opus-4-8 "" > "$(sm_proj "$S")/a.jsonl"
+[[ "$(sm_run "$S")" == "opus 4.8 · default" ]] \
+  && ok "missing effort field -> 'default'" || bad "missing effort -> wrong label"
+
+# Torn last line (mid-write): "type":"assistant" is written late, so a partial
+# line can't match and the previous complete turn is what shows — never blank.
+S="$(sm_box)"; P="$(sm_proj "$S")"
+sm_line claude-opus-4-8 xhigh > "$P/a.jsonl"
+printf '%s' '{"parentUuid":"p","message":{"model":"claude-sonn' >> "$P/a.jsonl"
+[[ "$(sm_run "$S")" == "opus 4.8 · xhigh" ]] \
+  && ok "torn final line -> previous turn kept, no flash of blank" \
+  || bad "torn final line broke the segment (got '$(sm_run "$S")')"
+
+# Bounded read: with the only assistant line far outside the tail window, the
+# segment falls back instead of scanning the whole (arbitrarily large) file.
+S="$(sm_box)"; P="$(sm_proj "$S")"
+sm_line claude-opus-4-8 xhigh > "$P/a.jsonl"
+awk 'BEGIN { s = sprintf("%0200000d", 0); printf "{\"pad\":\"%s\"}\n", s }' >> "$P/a.jsonl"
+[[ "$(sm_run "$S")" == "fable 5 · medium" ]] \
+  && ok "reads only a bounded tail (old turn beyond the window is not scanned)" \
+  || bad "tail is not bounded (got '$(sm_run "$S")')"
+
+# The live value is written back to the options, so the fallback above is the
+# last value actually DISPLAYED rather than a launch-time fossil.
+S="$(sm_box)"; sm_line claude-opus-4-8 xhigh > "$(sm_proj "$S")/a.jsonl"
+: > "$SMTMP/setlog"; sm_run "$S" >/dev/null
+grep -q '@concierge_model=opus 4.8' "$SMTMP/setlog" \
+  && ok "live value is cached back into @concierge_model" \
+  || bad "live value not cached back into @concierge_model"
+# Unchanged value -> no pointless server round-trip every 5 seconds.
+FALLBACK_MODEL="opus 4.8"; FALLBACK_EFFORT="xhigh"
+: > "$SMTMP/setlog"; sm_run "$S" >/dev/null
+[[ ! -s "$SMTMP/setlog" ]] && ok "unchanged value -> no option write per tick" \
+  || bad "writes the option on every tick"
+FALLBACK_MODEL="fable 5"; FALLBACK_EFFORT="medium"
+rm -rf "$SMTMP"
 
 # 3c) narrow-display mode: auto-detect, with both-direction override ---------
 echo "› narrow mode (width auto-detect)"
