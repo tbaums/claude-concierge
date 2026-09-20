@@ -24,6 +24,10 @@
 #  pane's shell hands them to claude as text rather than re-parsing a `|` or a
 #  `;` inside an appended system prompt as an operator.
 #
+#  A session you killed on purpose is not brought back: snapshot.sh's retired
+#  list is consulted first, and only naming the session (or its --dash) yourself
+#  overrides that.
+#
 #  Env: CONCIERGE_RESTORE_MAX_AGE_HOURS (default 72) — refuse a manifest older
 #       than this; CONCIERGE_RESTORE_READY_TIMEOUT (default 60) — how long to
 #       wait for a dash member to come up before building the grid anyway.
@@ -34,6 +38,7 @@ set -u
 SOCK="${CONCIERGE_SOCK:-concierge}"
 CFG="$HOME/.config/claude-concierge"
 MANIFEST="${CONCIERGE_MANIFEST:-$CFG/session-manifest}"
+RETIRED="${CONCIERGE_RETIRED:-$CFG/retired}"
 CLAUDE="${CONCIERGE_CLAUDE:-$(command -v claude || echo "$HOME/.local/bin/claude")}"
 MAX_AGE_HOURS="${CONCIERGE_RESTORE_MAX_AGE_HOURS:-72}"
 READY_TIMEOUT="${CONCIERGE_RESTORE_READY_TIMEOUT:-60}"
@@ -105,6 +110,18 @@ wanted()    {                       # is session $1 in this run's scope?
   case " $NAMES " in *" $1 "*) return 0 ;; esac
   return 1
 }
+asked_for() {                       # did you name $1 yourself, or is it a sweep?
+  case " $NAMES " in *" $1 "*) return 0 ;; esac
+  [ -n "$DASH" ] && [ "$DASH" = "$1" ] && return 0
+  return 1
+}
+# A session you deliberately killed stays killed. snapshot.sh records the kill
+# (session-closed hook) in the retired list, and this is the half that honours
+# it: without this, a manifest that still lists the session — a rotated copy, a
+# --force restore of an older capture, a capture that raced the kill — brings it
+# straight back. Naming it yourself is the override; so is re-creating it, which
+# clears the entry via the session-created hook.
+retired()   { grep -q "^$1	" "$RETIRED" 2>/dev/null; }
 
 # The pid of the claude under a pane. The pane's own pid is the `zsh -c`
 # wrapper, so descend through the children — same shape as snapshot.sh's
@@ -206,6 +223,10 @@ restore_session_named() {            # $1 = session name from the manifest
     SKIPS=$((SKIPS + 1))
     return 1
   fi
+  if retired "$1" && ! asked_for "$1"; then
+    printf '  skipping %s — retired (name it explicitly to bring it back)\n' "$1"
+    return 0
+  fi
   cwd="$(printf '%s' "$row" | cut -d'|' -f3)"
   rest="$(printf '%s' "$row" | cut -d'|' -f5-)"   # everything after the model
   start_session "$1" "$cwd" "$rest" || return 1
@@ -218,6 +239,10 @@ restore_dash() {                     # $1 = grid name
   if [ -z "$row" ]; then
     printf 'concierge: no dash named %s in the manifest\n' "$1" >&2
     exit 1
+  fi
+  if retired "$1" && ! asked_for "$1"; then
+    printf '  skipping dash %s — retired (name it with --dash to bring it back)\n' "$1"
+    return 0
   fi
   members="$(printf '%s' "$row" | cut -d'|' -f4-)"
   if has "$1"; then printf '  already up: %s\n' "$1"; return 0; fi

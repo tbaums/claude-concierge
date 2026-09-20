@@ -49,6 +49,13 @@ field() {  # $1 = key, $2 = line — first top-level match wins (escaped
     | head -1 | sed -E 's/.*"([^"]*)"$/\1/'
 }
 
+# Backstop capture of the working set. This tick already runs every 5s, so the
+# manifest gets refreshed without a launchd agent or a second timer: --throttle
+# makes all but one call in ten minutes a single stat. Errors stay here — a
+# failed capture must never reach the status bar.
+[ -x "$CFG/snapshot.sh" ] && "$CFG/snapshot.sh" --quiet \
+  --throttle "${CONCIERGE_SNAPSHOT_THROTTLE:-600}" >/dev/null 2>&1
+
 prev_model="$(opt @concierge_model)"
 prev_effort="$(opt @concierge_effort)"
 

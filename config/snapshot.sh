@@ -22,7 +22,17 @@
 #  pipe" — an appended system prompt is arbitrary text and may itself contain a
 #  literal `|`, so a parser must never count tokens.
 #
-#  Overrides, for tests: CONCIERGE_SOCK, CONCIERGE_SESSION, CONCIERGE_MANIFEST.
+#  Flags:
+#    --quiet            say nothing on success (this runs from tmux hooks)
+#    --throttle SECS    do nothing unless the manifest is older than SECS —
+#                       one stat, no tmux queries, so the 5s status tick can
+#                       call it as a backstop for free
+#    --retire NAME      the session just closed: remember it was deliberately
+#                       killed, so a later restore doesn't resurrect it
+#    --unretire NAME    the session just came back: forget that
+#
+#  Overrides, for tests: CONCIERGE_SOCK, CONCIERGE_SESSION, CONCIERGE_MANIFEST,
+#  CONCIERGE_RETIRED.
 # ───────────────────────────────────────────────────────────────────────────
 set -u
 
@@ -30,6 +40,20 @@ SOCK="${CONCIERGE_SOCK:-concierge}"
 MAIN="${CONCIERGE_SESSION:-concierge}"
 CFG="$HOME/.config/claude-concierge"
 MANIFEST="${CONCIERGE_MANIFEST:-$CFG/session-manifest}"
+RETIRED="${CONCIERGE_RETIRED:-$CFG/retired}"
+KEEP=5                              # rotated copies: session-manifest.1 … .5
+
+QUIET=0; THROTTLE=""; RETIRE=""; UNRETIRE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --quiet)    QUIET=1 ;;
+    --throttle) shift; THROTTLE="${1-}" ;;
+    --retire)   shift; RETIRE="${1-}" ;;
+    --unretire) shift; UNRETIRE="${1-}" ;;
+    *)          printf 'concierge snapshot: unknown option %s\n' "$1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 T() { tmux -L "$SOCK" "$@"; }
 
@@ -132,6 +156,48 @@ EOF
 
 dir="${MANIFEST%/*}"
 [ -d "$dir" ] || mkdir -p "$dir" || exit 1
+
+# The 5s status tick calls us with --throttle, so the common case must cost one
+# stat and nothing else — no tmux queries, no ps walk.
+if [ -n "$THROTTLE" ] && [ -f "$MANIFEST" ]; then
+  age=$(( $(date '+%s') - $(stat -f '%m' "$MANIFEST" 2>/dev/null || echo 0) ))
+  [ "$age" -ge "$THROTTLE" ] || exit 0
+fi
+
+# A session you deliberately killed should not come back on the next restore.
+# Only sessions that had something to restore are worth recording — the same
+# "nothing to restore" line snapshot draws for a bare shell.
+had_row() { grep -qE "^(SESSION|DASH)\|$1\|" "$MANIFEST" 2>/dev/null; }
+forget() {                          # drop $1's line from the retired list
+  local tmpr
+  [ -f "$RETIRED" ] || return 0
+  tmpr="$RETIRED.$$"
+  # NB: grep -v exits 1 when it filters every line away, which is exactly the
+  # case where the list becomes empty — so don't gate the mv on its status.
+  grep -v "^$1	" "$RETIRED" > "$tmpr" 2>/dev/null
+  [ -f "$tmpr" ] && mv "$tmpr" "$RETIRED" 2>/dev/null || rm -f "$tmpr"
+}
+if [ -n "$RETIRE" ] && had_row "$RETIRE"; then
+  forget "$RETIRE"
+  printf '%s\t%s\n' "$RETIRE" "$(date '+%s')" >> "$RETIRED" 2>/dev/null || true
+fi
+[ -n "$UNRETIRE" ] && forget "$UNRETIRE"
+
+# Keep the last few captures so a bad one can be rolled back. Pure mv chain: an
+# interrupted rotation costs one slot, and the live write below is still atomic.
+rotate() {
+  local i prev
+  [ -f "$MANIFEST" ] || return 0
+  i=$KEEP
+  while [ "$i" -gt 1 ]; do
+    prev=$((i - 1))
+    [ -f "$MANIFEST.$prev" ] && mv "$MANIFEST.$prev" "$MANIFEST.$i" 2>/dev/null
+    i=$prev
+  done
+  cp "$MANIFEST" "$MANIFEST.1" 2>/dev/null || true
+}
+rotate
+
 tmp="$MANIFEST.$$"
 
 {
@@ -142,5 +208,6 @@ tmp="$MANIFEST.$$"
 
 mv "$tmp" "$MANIFEST" || { rm -f "$tmp"; exit 1; }
 
+[ "$QUIET" = 1 ] && exit 0
 rows="$(grep -cv '^#' "$MANIFEST" 2>/dev/null || printf 0)"
 printf 'concierge: snapshot → %s (%s rows)\n' "$MANIFEST" "$rows"
