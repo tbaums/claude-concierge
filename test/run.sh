@@ -673,7 +673,7 @@ $(diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST"))"
     && ok "both captures carry a timestamped header line" || bad "header line missing"
 
   # The manifest is written atomically and overwritten in place, no history.
-  ls "$(dirname "$MANIFEST")" | grep -q "^$(basename "$MANIFEST")\..*" \
+  ls "$(dirname "$MANIFEST")" | grep -qE "^$(basename "$MANIFEST")\.[0-9]{3,}$" \
     && bad "a temp manifest was left behind" || ok "atomic write leaves no temp file"
 
   # `concierge snapshot` dispatches here without opening a window.
@@ -681,9 +681,95 @@ $(diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST"))"
     && ok "bin/concierge dispatches the snapshot subcommand" \
     || bad "bin/concierge has no snapshot subcommand"
 
+  # ── Continuous capture: a snapshot you have to remember to run drifts ────
+  RETIRED="$SNAP/retired"
+  snapf() {  # snapshot with extra flags
+    ( export CONCIERGE_SOCK="$SSOCK" CONCIERGE_MANIFEST="$MANIFEST" \
+             CONCIERGE_RETIRED="$RETIRED"
+      sh "$REPO/config/snapshot.sh" "$@" 2>&1 )
+  }
+  # --quiet says nothing; the hooks run it hundreds of times a day.
+  [[ -z "$(snapf --quiet)" ]] && ok "--quiet prints nothing" || bad "--quiet still printed"
+
+  # --throttle: one stat, and no write while the manifest is fresh.
+  before="$(stat -f '%m' "$MANIFEST")"
+  snapf --quiet --throttle 600
+  [[ "$(stat -f '%m' "$MANIFEST")" == "$before" ]] \
+    && ok "--throttle skips the capture while the manifest is fresh" \
+    || bad "--throttle wrote anyway"
+  touch -t 202001010000 "$MANIFEST"
+  old="$(stat -f '%m' "$MANIFEST")"     # compare against the aged mtime, not a
+  snapf --quiet --throttle 600          # fresh one — same-second captures tie
+  [[ "$(stat -f '%m' "$MANIFEST")" -gt "$old" ]] \
+    && ok "--throttle captures once the manifest is older than the window" \
+    || bad "--throttle did not capture an old manifest"
+
+  # Rotation keeps the previous captures, newest first, each with its header.
+  cp "$MANIFEST" "$SNAP/gen1"; snapf --quiet
+  [[ -f "$MANIFEST.1" ]] && diff -q "$SNAP/gen1" "$MANIFEST.1" >/dev/null \
+    && ok "rotation moves the previous capture to .1" || bad "no .1 after a capture"
+  for _ in 1 2 3 4 5; do snapf --quiet; done
+  n="$(ls "$MANIFEST".[1-5] 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "$n" == 5 ]] && ok "rotation keeps 5 previous manifests" || bad "kept $n manifests, want 5"
+  [[ -f "$MANIFEST.6" ]] && bad "rotation kept a 6th manifest" || ok "rotation stops at 5"
+  head -1 "$MANIFEST.5" | grep -q '^# claude-concierge session manifest — captured' \
+    && ok "a rotated manifest still carries its own capture time" || bad "rotated header lost"
+
+  # Retiring: a session you killed had something to restore, so record it.
+  snapf --quiet                       # make sure `work` is in the manifest
+  snapf --quiet --retire work
+  grep -qE "^work	[0-9]+$" "$RETIRED" \
+    && ok "a closed session with rows is retired, with a timestamp" \
+    || bad "retired not written: $(cat "$RETIRED" 2>/dev/null)"
+  # Re-creating it clears the entry.
+  snapf --quiet --unretire work
+  grep -q '^work	' "$RETIRED" && bad "re-created session stayed retired" \
+    || ok "re-creating the session clears its retired entry"
+  # A bare shell had nothing to restore, so closing it retires nothing.
+  snapf --quiet --retire shellonly
+  grep -q '^shellonly	' "$RETIRED" && bad "a bare shell was retired" \
+    || ok "a session with nothing to restore is not retired"
+
+  # The wiring that makes it continuous: tmux hooks on both events, and the
+  # 5s status tick as the periodic backstop.
+  grep -q "set-hook -g session-created .*SNAPSHOT" "$REPO/config/tmux.conf" \
+    && ok "tmux.conf captures on session-created" || bad "no session-created hook"
+  grep -q "set-hook -g session-closed .*--retire" "$REPO/config/tmux.conf" \
+    && ok "tmux.conf retires on session-closed" || bad "no session-closed hook"
+  grep -qE "set-hook -g session-(created|closed) .*run-shell -b" "$REPO/config/tmux.conf" \
+    && ok "the hooks run detached (-b), so tmux never waits on us" || bad "hooks not backgrounded"
+  grep -q 'snapshot.sh" --quiet' "$REPO/config/status-model.sh" \
+    && grep -q 'throttle' "$REPO/config/status-model.sh" \
+    && ok "the status tick is the throttled periodic backstop" || bad "no backstop in status-model.sh"
+
+  # End to end, through the real tmux.conf: creating and killing a session
+  # updates the manifest with no manual snapshot call at all.
+  HOOKHOME="$SNAP/home"; mkdir -p "$HOOKHOME/.config/claude-concierge"
+  cp "$REPO/config/snapshot.sh" "$REPO/config/model-label.sh" "$HOOKHOME/.config/claude-concierge/"
+  chmod +x "$HOOKHOME/.config/claude-concierge/snapshot.sh"
+  HSOCK="cc_hooks_$$"; HMAN="$SNAP/hookman"; HRET="$SNAP/hookret"
+  HOME="$HOOKHOME" tmux -L "$HSOCK" -f "$REPO/config/tmux.conf" new-session -d -s seed 'sleep 30'
+  tmux -L "$HSOCK" set-environment -g CONCIERGE_SOCK "$HSOCK"
+  tmux -L "$HSOCK" set-environment -g CONCIERGE_MANIFEST "$HMAN"
+  tmux -L "$HSOCK" set-environment -g CONCIERGE_RETIRED "$HRET"
+  tmux -L "$HSOCK" new-session -d -s auto -c "$SNAP" "$FAKE --model claude-sonnet-5"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^SESSION|auto|' "$HMAN" 2>/dev/null && break; sleep 0.5; done
+  grep -q '^SESSION|auto|' "$HMAN" 2>/dev/null \
+    && ok "session-created captures the new session, no manual snapshot" \
+    || bad "the create hook did not capture: $(cat "$HMAN" 2>/dev/null)"
+  tmux -L "$HSOCK" kill-session -t auto 2>/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^auto	' "$HRET" 2>/dev/null && break; sleep 0.5; done
+  grep -qE "^auto	[0-9]+$" "$HRET" 2>/dev/null \
+    && ok "session-closed retires the killed session, with a timestamp" \
+    || bad "the close hook did not retire it: $(cat "$HRET" 2>/dev/null)"
+  grep -q '^SESSION|auto|' "$HMAN" 2>/dev/null \
+    && bad "the killed session is still in the manifest" \
+    || ok "the manifest is re-captured on close, without the killed session"
+  tmux -L "$HSOCK" kill-server 2>/dev/null
+
   ST kill-server 2>/dev/null
   rm -rf "$SNAP"
-  unset -f ST snap rows restore_stub
+  unset -f ST snap rows restore_stub snapf
 else
   bad "tmux not installed (snapshot test skipped)"
 fi
