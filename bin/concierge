@@ -10,11 +10,21 @@
 #    --here   launch in the CURRENT terminal window (no new iTerm window / no
 #             profile theming — useful over SSH or in a plain shell)
 #
+#  Subcommands:
+#    snapshot  capture the live socket (sessions, cwds, models, flags, splits,
+#              dash grids) to ~/.config/claude-concierge/session-manifest.
+#              Runs right here in this terminal — no window is opened.
+#
 #  By default the concierge resumes your previous conversation, so a crash or
 #  reboot picks up exactly where you left off.
 # ───────────────────────────────────────────────────────────────────────────
 
 CFG="$HOME/.config/claude-concierge"
+
+# Subcommands run in this terminal and never open a window.
+if [[ "${1-}" == "snapshot" ]]; then
+  exec "$CFG/snapshot.sh" "${@:2}"
+fi
 
 for arg in "$@"; do
   [[ "$arg" == "--new" ]] && : > "$CFG/.start-fresh"
