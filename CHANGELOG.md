@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-09-19
+
+### Added
+- **Helper sessions come back after a reboot.** `start.sh` recreates static
+  helper tmux sessions (a dash grid, a log tailer) from
+  `~/.config/claude-concierge/helpers.conf` (`name<TAB>command`) after the main
+  session is up: skips sessions already alive, warns and continues on failure,
+  never affects exit status; `CONCIERGE_HELPERS=0` opts out. (#7)
+- **`concierge snapshot`** captures the live socket into a generated manifest
+  (`~/.config/claude-concierge/session-manifest`): every session's cwd, model
+  and launch flags read from the pane's process tree, splits, and dash grids
+  read back from `pane_tty` → `list-clients`. Nothing is hand-maintained. (#18)
+- **`concierge restore [name…] [--dash N] [--list] [--dry-run] [--force]`**
+  rebuilds sessions, splits and dashes from the manifest in their recorded
+  cwds, so `claude --continue` finds the right conversation. Idempotent by
+  name; a vanished cwd is skipped with a warning; dashes wait for member panes
+  to be ready (`CONCIERGE_RESTORE_READY_TIMEOUT`, default 60s) and never hang;
+  manifests older than `CONCIERGE_RESTORE_MAX_AGE_HOURS` (72) are refused
+  unless `--force`. Startup prints a one-line offer when a manifest exists and
+  its sessions are absent — nothing launches unasked. (#19)
+- **The manifest is captured continuously.** tmux `session-created` /
+  `session-closed` hooks trigger a backgrounded snapshot, and the 5s status
+  refresh runs `snapshot --quiet --throttle 600` as a backstop. Deliberately
+  killed sessions land in a `retired` list and are not resurrected; the last
+  five manifests are rotated. (#20)
+- **Stable, speakable handles for parts of a response.** A `Stop` hook runs a
+  budgeted headless Haiku call over each finished reply and surfaces its
+  addressable items as `<turn><letter>` handles (`4a`, `4b`…) in the hook's
+  `systemMessage`; a `UserPromptSubmit` hook attaches the last five turns'
+  maps so "on 4b, do it the other way" resolves. Per-cwd state survives
+  `--continue`; extraction failures never delay the reply;
+  `CONCIERGE_HANDLES=0` disables it. (#9)
+
 ## [0.7.0] — 2026-09-19
 
 ### Added
@@ -186,6 +219,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.8.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.5.0
