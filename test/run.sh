@@ -554,6 +554,140 @@ else
   bad "tmux not installed (helper sessions test skipped)"
 fi
 
+# 3f) snapshot: capture the live socket into a manifest ----------------------
+# Everything runs on a throwaway socket with a fake `claude` — never the real
+# socket, and no customer/engagement names anywhere.
+echo "› snapshot (working set capture)"
+if have tmux; then
+  SNAP="$(cd "$(mktemp -d)" && pwd -P)"
+  SSOCK="cc_snap_$$"
+  MANIFEST="$SNAP/manifest"
+  FAKE="$SNAP/bin/claude"
+  mkdir -p "$SNAP/bin" "$SNAP/w1" "$SNAP/w2"
+  # A fake claude that stays alive: the real one is found by walking a pane's
+  # children for a claude command line, and this is found exactly the same way.
+  printf '#!/bin/sh\nsleep 300\n' > "$FAKE"; chmod +x "$FAKE"
+  ST() { tmux -L "$SSOCK" "$@"; }
+  snap() { ( export CONCIERGE_SOCK="$SSOCK" CONCIERGE_MANIFEST="$MANIFEST"
+             sh "$REPO/config/snapshot.sh" >/dev/null 2>&1 ); }
+  rows() { grep -v '^#' "$MANIFEST" 2>/dev/null; }
+
+  # Empty-ish socket: the main session alone is a header and nothing else.
+  ST new-session -d -s concierge -c "$SNAP" "$FAKE --dangerously-skip-permissions --chrome"
+  snap
+  if [[ -s "$MANIFEST" ]] && [[ -z "$(rows)" ]] && head -1 "$MANIFEST" | grep -q '^#'; then
+    ok "only the main session -> header, zero rows (not an error)"
+  else
+    bad "empty socket -> unexpected manifest ($(rows))"
+  fi
+
+  # A populated socket: two sessions with different launch flags, a split
+  # inside the main session, a bare shell that has nothing to restore, and a
+  # dash grid of two tiles side by side.
+  ST split-window -d -t concierge -c "$SNAP/w2" \
+     "$FAKE --model claude-opus-5 --append-system-prompt 'pipe | inside'"
+  ST new-session -d -s work -c "$SNAP/w1" "$FAKE --model claude-sonnet-5 --dangerously-skip-permissions"
+  ST new-session -d -s web  -c "$SNAP/w2" "$FAKE --chrome"
+  ST new-session -d -s shellonly -c "$SNAP" 'sleep 300'
+  ST new-session -d -s grid -c "$SNAP" "env TMUX= tmux -L $SSOCK attach -t work"
+  ST split-window -h -d -t grid "env TMUX= tmux -L $SSOCK attach -t web"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ "$(ST list-clients -F '#{client_session}' 2>/dev/null | wc -l)" -ge 2 ]] && break
+    sleep 0.3
+  done
+  snap
+
+  grep -q "^SESSION|work|$SNAP/w1|claude-sonnet-5|--model claude-sonnet-5 --dangerously-skip-permissions$" "$MANIFEST" \
+    && ok "SESSION row: cwd + model + flags for a --model session" \
+    || bad "SESSION row for 'work' wrong: $(grep '^SESSION|work' "$MANIFEST")"
+  grep -q "^SESSION|web|$SNAP/w2||--chrome$" "$MANIFEST" \
+    && ok "SESSION row: a --chrome session (no model) is captured" \
+    || bad "SESSION row for 'web' wrong: $(grep '^SESSION|web' "$MANIFEST")"
+  grep -q '^SESSION|concierge|' "$MANIFEST" \
+    && bad "the main session should not get a SESSION row" \
+    || ok "the main session is excluded from SESSION rows"
+  grep -q '^SESSION|grid|' "$MANIFEST" \
+    && bad "a dash grid should not also be a SESSION row" \
+    || ok "a dash grid is not double-counted as a session"
+  grep -q '^SESSION|shellonly|' "$MANIFEST" \
+    && bad "a bare shell was captured (nothing to restore)" \
+    || ok "a pane with no claude command line is omitted, not an error"
+  # SESSION rows == list-sessions minus concierge, minus the grid.
+  want="$(ST list-sessions -F '#{session_name}' | grep -vx concierge | grep -vx grid | grep -vx shellonly | sort | tr '\n' ' ')"
+  got="$(grep '^SESSION|' "$MANIFEST" | cut -d'|' -f2 | sort | tr '\n' ' ')"
+  [[ "$want" == "$got" ]] && ok "SESSION rows match list-sessions ($got)" \
+    || bad "SESSION rows '$got' != sessions '$want'"
+  # The split inside the main session, with a literal | in its appended prompt.
+  sp="$(grep '^SPLIT|concierge|' "$MANIFEST")"
+  [[ -n "$sp" && "$sp" == *"|$SNAP/w2|claude-opus-5|--model claude-opus-5 --append-system-prompt pipe | inside" ]] \
+    && ok "SPLIT row keeps everything after the last fixed pipe verbatim" \
+    || bad "SPLIT row wrong: $sp"
+  grep -q '^DASH|grid|2|work web$' "$MANIFEST" \
+    && ok "DASH row: membership and column count read back off the socket" \
+    || bad "DASH row wrong: $(grep '^DASH' "$MANIFEST")"
+
+  # Round trip: snapshot -> destroy -> restore (stub; slice 2 is the real one)
+  # -> snapshot again. Every failure mode in here is silent, so this is the
+  # acceptance core: the two manifests must agree line for line.
+  cp "$MANIFEST" "$SNAP/before"
+  ST kill-session -t work 2>/dev/null; ST kill-session -t web 2>/dev/null
+  ST kill-session -t grid 2>/dev/null || true
+  ST kill-pane -t concierge.1 2>/dev/null
+  restore_stub() {  # replays a manifest; parses by record, never by token count
+    local kind name cwd model rest parent title first m
+    # Sessions first — a grid can only attach to tiles that already exist.
+    while IFS='|' read -r kind name cwd model rest; do
+      ST new-session -d -s "$name" -c "$cwd" "$FAKE $rest"
+    done < <(grep '^SESSION|' "$SNAP/before")
+    # Splits carry one more fixed field before the trailing flags.
+    while IFS='|' read -r kind parent title cwd model rest; do
+      ST split-window -d -t "$parent" -c "$cwd" "$FAKE $rest"
+    done < <(grep '^SPLIT|' "$SNAP/before")
+    # Then the grids, one pane per member, in the recorded order.
+    while IFS='|' read -r kind name cols rest; do
+      first=1
+      for m in $rest; do
+        if [[ $first == 1 ]]; then
+          ST new-session -d -s "$name" -c "$SNAP" "env TMUX= tmux -L $SSOCK attach -t $m"
+          first=0
+        else
+          ST split-window -h -d -t "$name" "env TMUX= tmux -L $SSOCK attach -t $m"
+        fi
+      done
+    done < <(grep '^DASH|' "$SNAP/before")
+  }
+  restore_stub >/dev/null 2>&1
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ "$(ST list-clients -F '#{client_session}' 2>/dev/null | wc -l)" -ge 2 ]] && break
+    sleep 0.3
+  done
+  snap
+  if diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST") >/dev/null; then
+    ok "round trip: snapshot -> destroy -> restore -> snapshot is identical"
+  else
+    bad "round trip differs:
+$(diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST"))"
+  fi
+  # Only the header moves between captures.
+  [[ "$(head -1 "$SNAP/before")" == '#'* && "$(head -1 "$MANIFEST")" == '#'* ]] \
+    && ok "both captures carry a timestamped header line" || bad "header line missing"
+
+  # The manifest is written atomically and overwritten in place, no history.
+  ls "$(dirname "$MANIFEST")" | grep -q "^$(basename "$MANIFEST")\..*" \
+    && bad "a temp manifest was left behind" || ok "atomic write leaves no temp file"
+
+  # `concierge snapshot` dispatches here without opening a window.
+  grep -q 'snapshot' "$REPO/bin/concierge" \
+    && ok "bin/concierge dispatches the snapshot subcommand" \
+    || bad "bin/concierge has no snapshot subcommand"
+
+  ST kill-server 2>/dev/null
+  rm -rf "$SNAP"
+  unset -f ST snap rows restore_stub
+else
+  bad "tmux not installed (snapshot test skipped)"
+fi
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"
