@@ -264,6 +264,34 @@ ensure_setting() {                  # $1 = key, $2 = JSON value, $3 = force|seed
 ensure_setting showMessageTimestamps true force 2>/dev/null || true
 ensure_setting outputStyle '"Concise"' seed 2>/dev/null || true
 
+# Register the handles hooks (see config/handles.sh) in Claude Code's own
+# settings, so every Concierge turn gets its `4a / 4b` index and the next
+# prompt can resolve those handles. Idempotent: the same command is never
+# added twice. jq only — merging into a nested hooks array with sed is how you
+# corrupt someone's settings file, and a missing index is a far smaller loss
+# than that. CONCIERGE_HANDLES=0 keeps them out entirely.
+ensure_handles_hooks() {
+  [ "${CONCIERGE_HANDLES:-1}" = 0 ] && return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local f="$HOME/.claude/settings.json" tmp
+  local stop="$CFG/handles.sh stop" prompt="$CFG/handles.sh prompt"
+  [ -f "$CFG/handles.sh" ] || return 0
+  [ -s "$f" ] || printf '{}\n' > "$f" 2>/dev/null || return 1
+  tmp="$f.concierge.$$"
+  jq --arg stop "$stop" --arg prompt "$prompt" '
+        def wired($c): any(.[]?; any(.hooks[]?; .command == $c));
+        .hooks //= {}
+      | if (.hooks.Stop // []) | wired($stop) then .
+        else .hooks.Stop = ((.hooks.Stop // []) + [{hooks: [{type: "command", command: $stop}]}]) end
+      | if (.hooks.UserPromptSubmit // []) | wired($prompt) then .
+        else .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + [{hooks: [{type: "command", command: $prompt}]}]) end
+      ' "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" && return 0
+  rm -f "$tmp"
+  return 1
+}
+ensure_handles_hooks 2>/dev/null || true
+
+
 # Default the concierge to Fable (your global default model is left untouched).
 # Voice tap-to-send comes from ~/.claude/settings.json ("voice".mode = "tap").
 

@@ -54,6 +54,43 @@ It's a *default*, not an override. The key is only written when it's missing (or
 your choice survives every later launch. Switching mid-session works normally
 too; nothing is rewritten under a running session.
 
+## Handles (naming the parts of a reply)
+
+There's no way to point at one part of an answer. A follow-up either quotes text
+back or describes the item ("the thing you flagged") — slower than just
+answering, and worst on a dense reply, where there's most to point at.
+
+So after each turn the Concierge builds an index and shows it on its own line:
+
+```
+handles: 4a proposal · 4b flagged concern · 4c diff question
+```
+
+Then "on 4b, no, do it the other way" lands exactly. Handles are
+`<turn><letter>`; the turn counter never repeats, so `4b` means the same thing
+for the rest of the conversation, and the next prompt carries the recent maps so
+the model resolves them.
+
+It's a `Stop` hook (`config/handles.sh`), not an instruction added to your
+prompts — the reply itself is never touched. A short headless Haiku call
+extracts the units on a 4-second leash; if it's slow, fails, or the reply is
+short or has fewer than two parts, there's simply no index and the turn is
+completely unaffected. Only the first 12 units of a turn get handles.
+
+State (the counter and the last five turns' maps) lives in
+`~/.local/state/claude-concierge/handles/`, keyed by cwd like Claude Code's own
+transcripts, so `--continue` keeps counting and resolving.
+
+`CONCIERGE_HANDLES=0` turns the whole thing off — no hook, no model call:
+
+```sh
+CONCIERGE_HANDLES=0 concierge
+```
+
+`CONCIERGE_HANDLES_MODEL` overrides the extraction model. Registering the hooks
+needs `jq` (merging into a nested hooks array without it is how you corrupt
+someone's settings file); without `jq` the scripts ship but stay unwired.
+
 ## Output width (narrow-display mode)
 
 By default the Concierge uses **the full width of your terminal**. It measures
