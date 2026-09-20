@@ -786,7 +786,8 @@ if have tmux; then
   printf '#!/bin/sh\nsleep 300\n' > "$RFAKE"; chmod +x "$RFAKE"
   RT() { tmux -L "$RSOCK" "$@"; }
   restore() { ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN" \
-                       CONCIERGE_CLAUDE="$RFAKE" CONCIERGE_RESTORE_READY_TIMEOUT=3
+                       CONCIERGE_CLAUDE="$RFAKE" CONCIERGE_RESTORE_READY_TIMEOUT=3 \
+                       CONCIERGE_RETIRED="$RST/retired"
                 sh "$REPO/config/restore.sh" "$@" 2>&1 ); }
   sessions() { RT list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
 
@@ -928,6 +929,41 @@ if have tmux; then
     && ok "re-snapshot after restore reproduces the same SESSION row" \
     || bad "row drifted: $(grep '^SESSION|meta|' "$RST/manifest3")"
   RT kill-session -t meta 2>/dev/null
+
+  # A session you deliberately killed must not come back, even when a manifest
+  # still lists it — a rotated copy, an older capture restored with --force, or
+  # a capture that raced the kill. The happy path hides this (the live recapture
+  # has already dropped the row), so retire a name and then restore from a
+  # manifest that still carries it.
+  RT kill-session -t alpha 2>/dev/null
+  printf 'alpha\t%s\n' "$(date '+%s')" > "$RST/retired"
+  grep -q '^SESSION|alpha|' "$RMAN" \
+    && ok "the manifest under test still lists the retired session" \
+    || bad "fixture wrong: alpha is not in the manifest"
+  out="$(restore)"
+  if RT has-session -t alpha 2>/dev/null; then
+    bad "a retired session was resurrected by a plain restore"
+  else
+    ok "a retired session is not brought back by a plain restore"
+  fi
+  [[ "$out" == *"skipping alpha — retired"* ]] \
+    && ok "the skip says why, by name" || bad "no retired message: '$out'"
+  # Naming it yourself is the override.
+  out="$(restore alpha)"
+  RT has-session -t alpha 2>/dev/null \
+    && ok "naming a retired session restores it anyway" || bad "restore <name> ignored the override"
+  # Same for a grid: skipped in a sweep, restored when asked for by --dash.
+  RT kill-session -t grid 2>/dev/null
+  printf 'grid\t%s\n' "$(date '+%s')" >> "$RST/retired"
+  out="$(restore)"
+  RT has-session -t grid 2>/dev/null && bad "a retired dash was resurrected" \
+    || ok "a retired dash is skipped in a sweep"
+  [[ "$out" == *"skipping dash grid — retired"* ]] \
+    && ok "the dash skip says why, by name" || bad "no retired dash message: '$out'"
+  out="$(restore --dash grid)"
+  RT has-session -t grid 2>/dev/null \
+    && ok "--dash on a retired grid restores it anyway" || bad "--dash ignored the override"
+  : > "$RST/retired"
 
   # Stale manifest: every form refuses unless --force.
   sed -i '' '1s/.*/# claude-concierge session manifest — captured 2020-01-01T00:00:00Z/' "$RMAN"
