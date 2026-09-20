@@ -790,6 +790,59 @@ if have tmux; then
     bad "readiness timeout path wrong: $(cat "$RST/timeout.out")"
   fi
 
+  # Flags are recorded argv TEXT, not shell source, and tmux runs a one-string
+  # pane command through `$SHELL -c`. An appended system prompt with a `|` or a
+  # `;` in it used to be truncated at the first metacharacter by that second
+  # parse — silently, with "restored:" and exit 0. So round-trip one through the
+  # REAL snapshot.sh -> restore.sh and check the restored PROCESS's own command
+  # line, not just the manifest text.
+  cmdline_under() {  # DEEPEST command line under pid $1 that names claude
+    # Children first, deliberately: the pane's own process is the `$SHELL -c`
+    # wrapper, whose command line quotes the whole string and therefore always
+    # looks intact. Only the process the shell actually spawned shows the argv
+    # that survived the parse — which is the thing under test.
+    local out c sub
+    for c in $(pgrep -P "$1" 2>/dev/null); do
+      sub="$(cmdline_under "$c")" && { printf '%s' "$sub"; return 0; }
+    done
+    out="$(ps -ww -o command= -p "$1" 2>/dev/null)"
+    case "$out" in *claude*) printf '%s' "$out"; return 0 ;; esac
+    return 1
+  }
+  claude_line() {    # the claude command line running in session $1
+    cmdline_under "$(RT display -p -t "$1" '#{pane_pid}' 2>/dev/null)"
+  }
+  PROMPT='be terse | avoid fluff; stay short'
+  RMAN2="$RST/manifest2"
+  RT new-session -d -s meta -c "$RST/a" \
+     "$RFAKE --model claude-opus-5 --append-system-prompt '$PROMPT'"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n "$(claude_line meta)" ]] && break; sleep 0.3; done
+  orig="$(claude_line meta)"
+  ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN2"
+    sh "$REPO/config/snapshot.sh" >/dev/null 2>&1 )
+  row="$(grep '^SESSION|meta|' "$RMAN2")"
+  [[ "$row" == *"--append-system-prompt $PROMPT" ]] \
+    && ok "snapshot records a prompt containing | and ; whole" || bad "snapshot lost it: $row"
+
+  RT kill-session -t meta 2>/dev/null
+  ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN2" CONCIERGE_CLAUDE="$RFAKE"
+    sh "$REPO/config/restore.sh" meta >/dev/null 2>&1 )
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n "$(claude_line meta)" ]] && break; sleep 0.3; done
+  back="$(claude_line meta)"
+  [[ "$back" == *"$PROMPT"* ]] \
+    && ok "restore replays a prompt with shell metacharacters as literal text" \
+    || bad "restored argv was mangled: '$back' (was '$orig')"
+  [[ "$(RT display -p -t meta '#{pane_dead}' 2>/dev/null)" == 0 ]] \
+    && ok "the restored pane is alive (no stray shell operator)" || bad "restored pane died"
+  # And it survives another lap: re-snapshotting the restored session gives the
+  # same row, so a snapshot/restore cycle can't erode the flags over time.
+  ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RST/manifest3"
+    sh "$REPO/config/snapshot.sh" >/dev/null 2>&1 )
+  [[ "$(grep '^SESSION|meta|' "$RST/manifest3")" == "$row" ]] \
+    && ok "re-snapshot after restore reproduces the same SESSION row" \
+    || bad "row drifted: $(grep '^SESSION|meta|' "$RST/manifest3")"
+  RT kill-session -t meta 2>/dev/null
+
   # Stale manifest: every form refuses unless --force.
   sed -i '' '1s/.*/# claude-concierge session manifest — captured 2020-01-01T00:00:00Z/' "$RMAN"
   out="$(restore)"; rc=$?
@@ -808,7 +861,7 @@ if have tmux; then
     && ok "bin/concierge dispatches the restore subcommand" || bad "no restore subcommand"
 
   rm -rf "$RST"
-  unset -f RT restore sessions
+  unset -f RT restore sessions cmdline_under claude_line
 else
   bad "tmux not installed (restore test skipped)"
 fi

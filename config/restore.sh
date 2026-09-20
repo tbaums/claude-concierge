@@ -20,7 +20,9 @@
 #
 #  Conversations come back because of the cwd: Claude Code keys its transcript
 #  on the working directory, so `--continue` in the recorded cwd resumes that
-#  session's own history. Flags are replayed verbatim.
+#  session's own history. Flags are replayed as recorded, shell-quoted so the
+#  pane's shell hands them to claude as text rather than re-parsing a `|` or a
+#  `;` inside an appended system prompt as an operator.
 #
 #  Env: CONCIERGE_RESTORE_MAX_AGE_HOURS (default 72) — refuse a manifest older
 #       than this; CONCIERGE_RESTORE_READY_TIMEOUT (default 60) — how long to
@@ -74,6 +76,27 @@ if [ "$FORCE" = 0 ] && [ -n "$CAPTURED" ]; then
     exit 1
   fi
 fi
+
+# tmux runs a one-string pane command through `$SHELL -c`, so anything we paste
+# into that string gets a second shell parse. The manifest's flags are recorded
+# argv text, not shell source: an appended system prompt legitimately contains
+# `|`, `;`, backticks and the like, and pasting it raw truncates the flag at the
+# first metacharacter — silently, with a cheerful "restored:" and exit 0. So
+# quote every word before it goes back through a shell.
+#
+# What this can and can't do: the manifest is whitespace-joined argv, so the
+# original grouping of a multi-word value is not recoverable from it — the
+# prompt comes back as several argv words rather than one. Nothing is lost or
+# reinterpreted, which is the part that was broken.
+quoted_cmd() {                      # $1 = program, $2 = flags text
+  local out w
+  out="$(sq "$1")"
+  for w in $2; do                   # deliberate split on whitespace
+    out="$out $(sq "$w")"
+  done
+  printf '%s' "$out"
+}
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 rows()      { grep "^$1|" "$MANIFEST" 2>/dev/null || true; }
 has()       { T has-session -t "$1" 2>/dev/null; }
@@ -134,7 +157,7 @@ start_session() {                    # $1 name, $2 cwd, $3 flags
     printf '  would restore: %s (%s) %s\n' "$1" "$2" "$3"
     return 0
   fi
-  if T new-session -d -s "$1" -c "$2" "$CLAUDE $3" 2>/dev/null; then
+  if T new-session -d -s "$1" -c "$2" "$(quoted_cmd "$CLAUDE" "$3")" 2>/dev/null; then
     printf '  restored: %s\n' "$1"
   else
     printf 'concierge: failed to start %s\n' "$1" >&2
@@ -163,7 +186,7 @@ restore_splits() {                   # $1 = parent session
     fi
     # rest is "model|flags" — flags is everything after the last fixed pipe.
     pane="$(T split-window -d -P -F '#{pane_id}' -t "$parent" -c "$cwd" \
-              "$CLAUDE ${rest#*|}" 2>/dev/null)"
+              "$(quoted_cmd "$CLAUDE" "${rest#*|}")" 2>/dev/null)"
     if [ -n "$pane" ]; then
       T select-pane -t "$pane" -T "$title" 2>/dev/null || true
       printf '  restored: %s split %s\n' "$parent" "$title"
