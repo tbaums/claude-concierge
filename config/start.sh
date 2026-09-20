@@ -17,6 +17,7 @@ MODEL="${CONCIERGE_MODEL:-claude-opus-5}"          # default to Opus 5
 WORKDIR="$HOME"                                    # cwd Claude keys its transcript on
 LOGDIR="$HOME/.claude/concierge-logs"
 FRESH_SENTINEL="$CFG/.start-fresh"
+HELPERS_CONF="$CFG/helpers.conf"                   # optional: see run_helpers()
 
 cd "$WORKDIR"
 
@@ -67,9 +68,80 @@ set_version_opts() {
   T set-option -t "$SESSION" @concierge_effort "$(resolve_effort)"
 }
 
+# Helper sessions — the static utility sessions you want back after a reboot
+# (a dashboard grid, a log tailer, a status board). The main concierge session
+# auto-resumes; these used to just vanish, with nothing to say they were gone.
+#
+# $CFG/helpers.conf, one per line, `name<TAB>command`; blank lines and #
+# comments ignored. Split on the FIRST tab only, so a command keeps its own
+# spacing verbatim:
+#
+#   # name  command
+#   dash    dash --cols 3 chord-a chord-b
+#   logs    tail -F ~/.claude/concierge-logs/today.log
+#
+# Rules: an existing session of that name is left strictly alone (tmux has no
+# "dead session" state — existing is the whole check, and we never kill or
+# recreate), a helper that won't start prints one warning and the rest carry
+# on, and nothing here can change this script's exit status or hold up the
+# main session. CONCIERGE_HELPERS=0 skips the step; no file at all is silent.
+run_helpers() {
+  if [ "${CONCIERGE_HELPERS:-1}" = 0 ]; then return 0; fi
+  if [ ! -f "$HELPERS_CONF" ]; then return 0; fi
+
+  local created=0 skipped=0 failed=0 n=0
+  local line stripped name cmd
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    stripped="${line//[[:space:]]/}"
+    case "$stripped" in ''|'#'*) continue ;; esac     # blank or comment
+    name="${line%%$'\t'*}"
+    cmd="${line#*$'\t'}"
+    if [ "$name" = "$line" ] || [ -z "$name" ] || [ -z "$cmd" ]; then
+      printf 'concierge: helpers.conf line %d: expected "name<TAB>command"\n' "$n" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if T has-session -t "$name" 2>/dev/null; then     # includes "concierge"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    # tmux forks before it discovers a command doesn't exist, so `new-session`
+    # returns 0 either way and whether the dead session has been reaped by the
+    # time we look is a race. Settle the common case up front: if the command
+    # starts with a plain binary name that isn't on PATH, it was never going to
+    # run. Anything shell-ish (a pipeline, VAR=x prefixes, ~ or $ to expand) is
+    # left for tmux to try.
+    local first="${cmd%%[[:space:]]*}"
+    case "$first" in *=*|*'$'*|*'~'*|*'('*|*'`'*) first="" ;; esac
+    if [ -n "$first" ] && ! command -v "$first" >/dev/null 2>&1; then
+      printf 'concierge: helper "%s" failed to start (no such command: %s)\n' \
+        "$name" "$first" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    # Then create it and check it's still there — a helper that died on the
+    # spot left no session behind, and that's a failure too.
+    if T new-session -d -s "$name" "$cmd" 2>/dev/null \
+       && T has-session -t "$name" 2>/dev/null; then
+      created=$((created + 1))
+    else
+      printf 'concierge: helper "%s" failed to start\n' "$name" >&2
+      failed=$((failed + 1))
+    fi
+  done < "$HELPERS_CONF"
+
+  if [ $((created + skipped + failed)) -gt 0 ]; then
+    printf 'concierge: helpers — %d created, %d skipped, %d failed\n' \
+      "$created" "$skipped" "$failed"
+  fi
+  return 0
+}
+
 # Re-attach if a concierge session is already alive (survives window close).
 if T has-session -t "$SESSION" 2>/dev/null; then
   set_version_opts
+  run_helpers
   exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"
 fi
 
@@ -262,5 +334,8 @@ set_version_opts
 mkdir -p "$LOGDIR"
 find "$LOGDIR" -name '*.log' -type f -mtime +60 -delete 2>/dev/null || true
 T pipe-pane -o -t "$SESSION" "exec '$CFG/logsink.sh'"
+
+# Main session is up — bring back the helper sessions before we attach.
+run_helpers
 
 exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"
