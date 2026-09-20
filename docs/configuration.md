@@ -150,6 +150,36 @@ Resume relies on Claude Code's own transcript at
 `~/.claude/projects/<cwd>/*.jsonl`. The Concierge always launches from your home
 directory so the same transcript is found every time.
 
+## Helper sessions
+
+The main `concierge` session comes back after a reboot; the other tmux sessions
+you keep on the socket — a dashboard grid, a log tailer, a status board — used to
+just vanish. List them in `~/.config/claude-concierge/helpers.conf`, one per
+line, as `name<TAB>command`:
+
+```
+# name  command
+dash    dash --cols 3 chord-a chord-b
+logs    tail -F ~/.claude/concierge-logs/2026-09-19.log
+```
+
+Blank lines and `#` comments are ignored, and only the **first tab** splits the
+line — the rest is your command verbatim, spacing and all.
+
+Every launch, once the main session is up, each named session that isn't already
+running is started with `tmux -L concierge new-session -d`. Sessions that *are*
+running are left strictly alone — never killed, never recreated — so this is safe
+to run on every reattach. A helper that won't start prints one warning and the
+rest still come up; nothing here can hold up or fail your Concierge window. Each
+launch ends with a one-line `created / skipped / failed` summary.
+
+No file means no helpers and nothing printed. `CONCIERGE_HELPERS=0` skips the
+step entirely:
+
+```sh
+CONCIERGE_HELPERS=0 concierge
+```
+
 ## Claude in Chrome
 
 `start.sh` launches with `--chrome`, so Claude Code's Chrome integration is on

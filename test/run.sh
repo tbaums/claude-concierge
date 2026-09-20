@@ -449,6 +449,111 @@ grep -q '^ensure_setting showMessageTimestamps true force' "$REPO/config/start.s
 grep -q "^ensure_setting outputStyle '\"Concise\"' seed" "$REPO/config/start.sh" \
   && ok "outputStyle is seeded (not forced)" || bad "outputStyle call site missing"
 
+# 3e) helper sessions (helpers.conf) -----------------------------------------
+# All of this runs on a throwaway socket — never the live -L concierge one.
+echo "› helper sessions"
+if have tmux; then
+  HELP="$(mktemp -d)"
+  HELPERS_CONF="$HELP/helpers.conf"
+  SOCK="cc_helpers_$$"
+  T() { tmux -L "$SOCK" "$@"; }          # what run_helpers talks through
+  RH="$(mktemp)"
+  sed -n '/^run_helpers()/,/^}/p' "$REPO/config/start.sh" > "$RH"
+  # shellcheck disable=SC1090
+  . "$RH"
+
+  rh_run() {   # $1 = CONCIERGE_HELPERS ("" = unset). Prints stdout+stderr.
+    if [[ -n "${1-}" ]]; then ( export CONCIERGE_HELPERS="$1"; run_helpers 2>&1 )
+    else                      ( run_helpers 2>&1 ); fi
+  }
+  rh_live() {  # is session $1 alive on the sandbox socket?
+    tmux -L "$SOCK" has-session -t "$1" 2>/dev/null
+  }
+
+  # Missing helpers.conf: silent, no error.
+  out="$(rh_run)"; rc=$?
+  [[ $rc -eq 0 && -z "$out" ]] && ok "no helpers.conf -> silent, rc 0" \
+    || bad "no helpers.conf -> rc=$rc out='$out'"
+
+  # All-comments/blank file: same as missing.
+  printf '# name\tcommand\n\n   \n' > "$HELPERS_CONF"
+  out="$(rh_run)"
+  [[ -z "$out" ]] && ok "comments/blank-only helpers.conf -> no helpers, no output" \
+    || bad "comments-only file produced output ('$out')"
+
+  # CONCIERGE_HELPERS=0: entries present, nothing created, nothing said.
+  printf 'off1\tsleep 30\noff2\tsleep 30\n' > "$HELPERS_CONF"
+  out="$(rh_run 0)"
+  if [[ -z "$out" ]] && ! rh_live off1 && ! rh_live off2; then
+    ok "CONCIERGE_HELPERS=0 -> creates nothing, says nothing"
+  else
+    bad "CONCIERGE_HELPERS=0 still ran ('$out')"
+  fi
+
+  # Two helpers: both come up, and the command keeps its own spacing (we split
+  # on the FIRST tab only, so the marker below lands verbatim).
+  MARK="$HELP/cmd.out"
+  printf 'h1\tsleep 30\nh2\tsh -c '"'"'printf "%%s" "a  b" > %s; sleep 30'"'"'\n' "$MARK" \
+    > "$HELPERS_CONF"
+  out="$(rh_run)"
+  if rh_live h1 && rh_live h2; then ok "two helpers -> both sessions created"
+  else bad "two helpers -> not both created ('$out')"; fi
+  [[ "$out" == *"2 created, 0 skipped, 0 failed"* ]] \
+    && ok "summary reports 2 created" || bad "summary wrong ('$out')"
+  # Give the helper's own command a moment to land its marker.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$MARK" ]] && break; sleep 0.2; done
+  [[ "$(cat "$MARK" 2>/dev/null)" == "a  b" ]] \
+    && ok "command after the first tab is passed through verbatim" \
+    || bad "command was mangled ('$(cat "$MARK" 2>/dev/null)')"
+
+  # Second run with the same sessions alive: nothing created, both skipped.
+  out="$(rh_run)"
+  [[ "$out" == *"0 created, 2 skipped, 0 failed"* ]] \
+    && ok "second run -> 2 skipped, nothing recreated" || bad "second run wrong ('$out')"
+
+  # A live session is never killed or recreated by the skip path.
+  before="$(tmux -L "$SOCK" display-message -p -t h1 '#{session_created}' 2>/dev/null)"
+  rh_run >/dev/null
+  after="$(tmux -L "$SOCK" display-message -p -t h1 '#{session_created}' 2>/dev/null)"
+  [[ -n "$before" && "$before" == "$after" ]] \
+    && ok "existing helper session left strictly alone" || bad "existing helper was recreated"
+
+  # A helper whose command doesn't exist: named in a warning, the good one still
+  # comes up, and the caller's exit status is untouched (start.sh runs `set -e`).
+  printf 'bad1\tdefinitely-not-a-binary-xyz\ngood1\tsleep 30\n' > "$HELPERS_CONF"
+  out="$( set -e; run_helpers 2>&1; printf '\nrc=%s' "$?" )"
+  [[ "$out" == *'helper "bad1" failed to start'* ]] \
+    && ok "failing helper is named in a warning" || bad "no warning for the failing helper ('$out')"
+  rh_live good1 && ok "a failing helper does not stop the next one" \
+    || bad "the helper after the failing one never started"
+  [[ "$out" == *"rc=0"* ]] && ok "run_helpers returns 0 (exit status unaffected)" \
+    || bad "run_helpers returned non-zero ('$out')"
+  [[ "$out" == *"1 created, 0 skipped, 1 failed"* ]] \
+    && ok "summary counts the failure" || bad "failure not counted ('$out')"
+
+  # Malformed line: warned with its line number, the rest still processed.
+  printf '# comment\nno-tab-here\nafter\tsleep 30\n' > "$HELPERS_CONF"
+  out="$(rh_run)"
+  [[ "$out" == *"helpers.conf line 2"* ]] \
+    && ok "malformed line is reported with its line number" || bad "malformed line not reported ('$out')"
+  rh_live after && ok "parsing continues past a malformed line" \
+    || bad "a malformed line stopped the rest of the file"
+
+  # A helper named like the main session counts as "already exists" -> skipped.
+  tmux -L "$SOCK" new-session -d -s concierge 'sleep 30' 2>/dev/null
+  printf 'concierge\tsleep 30\n' > "$HELPERS_CONF"
+  out="$(rh_run)"
+  [[ "$out" == *"0 created, 1 skipped, 0 failed"* ]] \
+    && ok "a helper colliding with the main session name is skipped" \
+    || bad "main-session collision not skipped ('$out')"
+
+  tmux -L "$SOCK" kill-server 2>/dev/null
+  rm -rf "$HELP"; rm -f "$RH"
+  unset -f T
+else
+  bad "tmux not installed (helper sessions test skipped)"
+fi
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"
