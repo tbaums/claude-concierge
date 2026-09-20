@@ -688,6 +688,131 @@ else
   bad "tmux not installed (snapshot test skipped)"
 fi
 
+# 3g) restore: rebuild the working set from a manifest -----------------------
+# Throwaway socket, fake `claude`, generic names — never the real socket.
+echo "› restore (working set rebuild)"
+if have tmux; then
+  RST="$(cd "$(mktemp -d)" && pwd -P)"
+  RSOCK="cc_rest_$$"
+  RMAN="$RST/manifest"
+  RFAKE="$RST/bin/claude"
+  mkdir -p "$RST/bin" "$RST/a" "$RST/b"
+  printf '#!/bin/sh\nsleep 300\n' > "$RFAKE"; chmod +x "$RFAKE"
+  RT() { tmux -L "$RSOCK" "$@"; }
+  restore() { ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN" \
+                       CONCIERGE_CLAUDE="$RFAKE" CONCIERGE_RESTORE_READY_TIMEOUT=3
+                sh "$REPO/config/restore.sh" "$@" 2>&1 ); }
+  sessions() { RT list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
+
+  # No manifest at all: a clear message, no crash.
+  out="$(restore)"; rc=$?
+  [[ $rc -ne 0 && "$out" == *"no manifest"* ]] \
+    && ok "no manifest -> clear message, no crash" || bad "no manifest -> rc=$rc '$out'"
+
+  {
+    printf '# claude-concierge session manifest — captured %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'SPLIT|alpha|notes|%s|claude-opus-5|--continue --model claude-opus-5\n' "$RST/b"
+    printf 'DASH|grid|2|alpha beta\n'
+    printf 'SESSION|alpha|%s|claude-sonnet-5|--continue --model claude-sonnet-5\n' "$RST/a"
+    printf 'SESSION|beta|%s||--continue --chrome\n' "$RST/b"
+    printf 'SESSION|gone|%s/nowhere||--continue\n' "$RST"
+  } > "$RMAN"
+
+  # --list prints the manifest and changes nothing.
+  out="$(restore --list)"
+  [[ "$out" == *"SESSION|alpha|"* && "$out" == *"DASH|grid|"* && -z "$(sessions)" ]] \
+    && ok "--list prints the manifest, restores nothing" || bad "--list wrong ('$out')"
+  [[ "$out" == *"manifest captured"* ]] \
+    && ok "capture time is printed on every run" || bad "capture time not printed"
+
+  # --dry-run reports and changes nothing.
+  out="$(restore --dry-run)"
+  [[ "$out" == *"would restore: alpha"* && -z "$(sessions)" ]] \
+    && ok "--dry-run reports without creating anything" || bad "--dry-run created something ('$out')"
+
+  # The real thing: two sessions with different flags, a split, and a grid.
+  out="$(restore)"; rc=$?
+  [[ "$(sessions)" == *"alpha"* && "$(sessions)" == *"beta"* ]] \
+    && ok "restore recreates the manifest's sessions" || bad "sessions missing ('$(sessions)')"
+  cmd="$(RT list-panes -s -t alpha -F '#{pane_pid}' | head -1)"
+  RT list-panes -s -t alpha -F '#{pane_current_path}' | grep -qx "$RST/a" \
+    && ok "a restored session lands in its recorded cwd" || bad "wrong cwd for alpha"
+  [[ "$(RT list-panes -s -t alpha -F '#{pane_title}' | grep -cx notes)" == 1 ]] \
+    && ok "the split comes back, titled from the manifest" || bad "split/title missing"
+  [[ "$(RT list-panes -s -t alpha | wc -l | tr -d ' ')" == 2 ]] \
+    && ok "the split is a second pane in its parent" || bad "split pane count wrong"
+  RT has-session -t grid 2>/dev/null && ok "the dash grid is assembled" || bad "dash grid missing"
+  [[ "$(RT list-panes -t grid | wc -l | tr -d ' ')" == 2 ]] \
+    && ok "the grid has one pane per member" || bad "grid pane count wrong"
+
+  # A missing cwd is skipped with a warning, the rest still comes up, and the
+  # exit status says something was skipped.
+  [[ "$out" == *"skipping gone"* ]] \
+    && ok "a session whose cwd is gone is skipped with a warning" || bad "no warning for missing cwd"
+  RT has-session -t gone 2>/dev/null && bad "the session with a missing cwd was started" \
+    || ok "the session with a missing cwd was not started"
+  [[ $rc -ne 0 ]] && ok "exit status reflects the skip" || bad "skips did not affect exit status"
+
+  # Second run is a no-op: same names, nothing killed or recreated.
+  born="$(RT display -p -t alpha '#{session_created}')"
+  out="$(restore)"
+  [[ "$out" == *"already up: alpha"* && "$out" == *"already up: grid"* ]] \
+    && ok "a second restore reports what's already up" || bad "second restore wrong ('$out')"
+  [[ "$(RT display -p -t alpha '#{session_created}')" == "$born" ]] \
+    && ok "an existing session is never killed or recreated" || bad "session was recreated"
+  [[ "$(RT list-panes -s -t alpha | wc -l | tr -d ' ')" == 2 ]] \
+    && ok "splits are idempotent (matched by pane title)" || bad "a duplicate split was added"
+  out="$(restore --dry-run)"
+  [[ "$out" == *"already up"* && "$out" != *"would restore"* ]] \
+    && ok "--dry-run on a full socket reports 'already up' only" || bad "--dry-run wrong ('$out')"
+
+  # A single name restores just that session.
+  RT kill-session -t beta 2>/dev/null
+  out="$(restore beta)"
+  RT has-session -t beta 2>/dev/null && ok "restore <name> brings back just that session" \
+    || bad "restore <name> did not restore it"
+
+  # --dash naming something absent from the manifest: named error, no action.
+  out="$(restore --dash nosuch)"; rc=$?
+  [[ $rc -ne 0 && "$out" == *"no dash named nosuch"* ]] \
+    && ok "--dash for an unknown grid errors by name" || bad "--dash unknown wrong ('$out')"
+
+  # Readiness timeout: a member that's up but never gets a claude under it can
+  # never be "ready", so the grid must warn and assemble anyway, not block. (A
+  # pane that just dies takes its session with it, which is a different path —
+  # this is the slow/stuck one the timeout exists for.)
+  RT kill-session -t grid 2>/dev/null; RT kill-session -t beta 2>/dev/null
+  RT new-session -d -s beta -c "$RST/b" 'sleep 300'
+  restore --dash grid > "$RST/timeout.out" 2>&1
+  if grep -q "not ready after 3s" "$RST/timeout.out" && RT has-session -t grid 2>/dev/null; then
+    ok "a member that never becomes ready times out and the grid still builds"
+  else
+    bad "readiness timeout path wrong: $(cat "$RST/timeout.out")"
+  fi
+
+  # Stale manifest: every form refuses unless --force.
+  sed -i '' '1s/.*/# claude-concierge session manifest — captured 2020-01-01T00:00:00Z/' "$RMAN"
+  out="$(restore)"; rc=$?
+  [[ $rc -ne 0 && "$out" == *"older than 72h"* ]] \
+    && ok "a stale manifest is refused outright" || bad "stale manifest not refused ('$out')"
+  out="$(restore --force --dry-run)"
+  [[ "$out" != *"older than"* ]] && ok "--force overrides staleness" || bad "--force did not override"
+
+  # The startup offer is exactly one line, and only when something is absent.
+  RT kill-server 2>/dev/null
+  offer="$(sed -n '/^offer_restore()/,/^}/p' "$REPO/config/start.sh")"
+  [[ -n "$offer" ]] && ok "start.sh carries the startup offer" || bad "start.sh has no offer_restore"
+  [[ "$(printf '%s' "$offer" | grep -c 'printf')" == 1 ]] \
+    && ok "the startup offer is a single line of output" || bad "the offer prints more than one line"
+  grep -q 'restore' "$REPO/bin/concierge" \
+    && ok "bin/concierge dispatches the restore subcommand" || bad "no restore subcommand"
+
+  rm -rf "$RST"
+  unset -f RT restore sessions
+else
+  bad "tmux not installed (restore test skipped)"
+fi
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"

@@ -138,10 +138,28 @@ run_helpers() {
   return 0
 }
 
+# One line, once, when there's a working set on disk that isn't running. The
+# manifest (`concierge snapshot`) is never restored for you — twenty Claude
+# sessions at boot is a lot of processes and tokens for sessions you may not
+# want today — so this only points at the command.
+offer_restore() {
+  local manifest="${CONCIERGE_MANIFEST:-$CFG/session-manifest}"
+  [ -f "$manifest" ] || return 0
+  local name absent=0
+  for name in $(grep '^SESSION|' "$manifest" 2>/dev/null | cut -d'|' -f2); do
+    if ! T has-session -t "$name" 2>/dev/null; then absent=$((absent + 1)); fi
+  done
+  if [ "$absent" -gt 0 ]; then
+    printf 'concierge: %d session(s) from your last snapshot are not running — `concierge restore` brings them back\n' "$absent"
+  fi
+  return 0
+}
+
 # Re-attach if a concierge session is already alive (survives window close).
 if T has-session -t "$SESSION" 2>/dev/null; then
   set_version_opts
   run_helpers
+  offer_restore
   exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"
 fi
 
@@ -337,5 +355,6 @@ T pipe-pane -o -t "$SESSION" "exec '$CFG/logsink.sh'"
 
 # Main session is up — bring back the helper sessions before we attach.
 run_helpers
+offer_restore
 
 exec env TMUX= tmux -L "$SOCK" attach -t "$SESSION"
