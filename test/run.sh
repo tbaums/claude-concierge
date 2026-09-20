@@ -866,6 +866,91 @@ else
   bad "tmux not installed (restore test skipped)"
 fi
 
+# 3h) handles: short names for the parts of a reply --------------------------
+# Everything runs against a stubbed `claude` on PATH and a sandbox state dir —
+# no model is ever called, and the real state directory is never touched.
+echo "› handles (addressable parts of a reply)"
+HND="$(cd "$(mktemp -d)" && pwd -P)"
+HSH="$REPO/config/handles.sh"
+mkdir -p "$HND/bin" "$HND/state" "$HND/w"
+HLONG="$(python3 -c "print('A structured reply with several parts. ' * 12, end='')")"
+HENV=""
+stub() { printf '#!/bin/sh\ntouch "%s/called"\n%s\n' "$HND" "$1" > "$HND/bin/claude"
+         chmod +x "$HND/bin/claude"; rm -f "$HND/called"; }
+hrun() {  # $1 = stop|prompt, $2 = the reply text ("" for the prompt hook)
+  ( cd "$HND/w"
+    printf '{"last_assistant_message":"%s","transcript_path":"/nonexistent"}' "$2" \
+      | env PATH="$HND/bin:$PATH" CONCIERGE_HANDLES_STATE="$HND/state" ${HENV:-} \
+            sh "$HSH" "$1" 2>/dev/null )
+}
+hstate() { cat "$HND/state"/*.tsv 2>/dev/null; }
+
+# A long, multi-item reply gets an index, and the state to resolve it later.
+stub 'printf "the proposal\na flagged concern\nthe diff question\n"'
+out="$(hrun stop "$HLONG")"
+[[ "$out" == *'"systemMessage":"handles: 1a the proposal · 1b a flagged concern'* ]] \
+  && ok "a multi-item reply gets a systemMessage handle index" || bad "no index: '$out'"
+[[ "$(hstate)" == *$'MAP\t1\t1b\ta flagged concern'* ]] \
+  && ok "the handle map is persisted for later resolution" || bad "state not written"
+
+# The next turn counts on — handles never repeat inside a conversation. The
+# state is keyed by cwd exactly like Claude Code's transcripts, so this is also
+# what makes them survive `--continue`.
+out="$(hrun stop "$HLONG")"
+[[ "$out" == *"handles: 2a the proposal"* ]] \
+  && ok "the turn counter advances (handles never reuse)" || bad "turn did not advance: '$out'"
+[[ "$(hstate | grep -c '^TURN')" == 2 ]] \
+  && ok "the counter survives a fresh process (so it survives --continue)" \
+  || bad "counter not persisted across invocations"
+
+# Resolution: the next prompt carries the recent maps, so "on 1b, …" lands.
+out="$(hrun prompt "")"
+[[ "$out" == *'"hookEventName":"UserPromptSubmit"'* && "$out" == *'1b: a flagged concern'* ]] \
+  && ok "UserPromptSubmit attaches the maps as additionalContext" || bad "no context: '$out'"
+
+# Over budget: the turn must be unaffected, and quickly. A 30s stub against a
+# 4s leash — if the leash slipped, this test would take half a minute.
+stub 'sleep 30'
+start=$SECONDS
+out="$(hrun stop "$HLONG")"
+elapsed=$((SECONDS - start))
+[[ -z "$out" && $elapsed -lt 15 ]] \
+  && ok "an extraction that hangs is killed and shows nothing (${elapsed}s)" \
+  || bad "timeout path wrong (out='$out', ${elapsed}s)"
+# A failing extraction is equally silent.
+stub 'exit 1'
+[[ -z "$(hrun stop "$HLONG")" ]] && ok "a failing extraction shows nothing" \
+  || bad "failure path produced output"
+
+# More than twelve units: the first twelve get handles, and nothing says so.
+stub 'i=1; while [ $i -le 15 ]; do printf "item %s\n" "$i"; i=$((i+1)); done'
+out="$(hrun stop "$HLONG")"
+[[ "$out" == *"a item 1"* && "$out" == *"l item 12"* && "$out" != *"item 13"* ]] \
+  && ok "only the first 12 units get handles (a…l)" || bad "truncation wrong: '$out'"
+
+# Too small or too plain to be worth indexing: silence, and no model call.
+stub 'printf "one\ntwo\n"'
+[[ -z "$(hrun stop "short reply")" && ! -f "$HND/called" ]] \
+  && ok "a short reply is not even sent for extraction" || bad "short reply was sent/indexed"
+stub 'printf "only one unit\n"'
+[[ -z "$(hrun stop "$HLONG")" ]] && ok "fewer than two units -> no index" || bad "single unit indexed"
+
+# The kill switch stops it dead, before any model call.
+stub 'printf "a\nb\nc\n"'
+HENV="CONCIERGE_HANDLES=0"
+[[ -z "$(hrun stop "$HLONG")" && ! -f "$HND/called" ]] \
+  && ok "CONCIERGE_HANDLES=0 skips the extraction call entirely" || bad "kill switch did not work"
+HENV=""
+
+# Wiring: start.sh registers both hooks, and honours the same kill switch.
+grep -q 'handles.sh stop' "$REPO/config/start.sh" && grep -q 'handles.sh prompt' "$REPO/config/start.sh" \
+  && ok "start.sh registers the Stop and UserPromptSubmit hooks" || bad "hooks not registered"
+grep -q 'CONCIERGE_HANDLES:-1' "$REPO/config/start.sh" \
+  && ok "the kill switch also keeps the hooks out of settings.json" || bad "kill switch not honoured at install"
+
+rm -rf "$HND"
+unset -f stub hrun hstate
+
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
 SB="$(mktemp -d)"; export HOME="$SB"
