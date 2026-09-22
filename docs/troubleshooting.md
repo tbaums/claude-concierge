@@ -38,7 +38,7 @@ Expected — the tmux server dies on reboot. Just run `concierge` again; it
 relaunches and `--continue` resumes the conversation from disk.
 
 ### Wrong model
-The Concierge forces `--model claude-opus-5`, which overrides your
+The Concierge forces `--model claude-opus-5-5`, which overrides your
 `~/.claude/settings.json` `model` — so editing that alone won't help. Override
 per-launch with `CONCIERGE_MODEL=… concierge --here`, or edit `MODEL=` in the
 repo's `config/start.sh` and re-run `bash install.sh` (editing the installed

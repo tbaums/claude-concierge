@@ -10,9 +10,9 @@ Everything the Concierge installs lives in three places:
 | `~/Library/LaunchAgents/com.tbaums.claude-backup.plist` | backup agent — only when `CONCIERGE_BACKUP_REPO` is set ([below](#backing-up-skills-memory-and-settings)) |
 | `~/Library/Application Support/iTerm2/DynamicProfiles/claude-concierge.json` | the themed iTerm2 profile |
 
-## The model (defaults to Opus 5)
+## The model (defaults to Opus 5.5)
 
-The Concierge launches Claude with `--model claude-opus-5`, independent of your
+The Concierge launches Claude with `--model claude-opus-5-5`, independent of your
 global `~/.claude/settings.json` `model` setting (so your other Claude sessions
 keep whatever default you've chosen). Note the direction of that independence:
 the explicit `--model` flag **overrides** `settings.json`, so changing
