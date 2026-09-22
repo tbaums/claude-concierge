@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] — 2026-09-22
+
+### Fixed
+- **Backup sync is safe to install on a second machine.** The one-time
+  `memory/` migration now runs only when the top-level files byte-match this
+  machine's memory (`CONCIERGE_BACKUP_MIGRATE=1` overrides), so a second
+  machine can no longer relabel the coordinator's memory as its own. `sync.sh`
+  refuses to pull or push while a legacy root `sync.sh` (the pre-0.9.0
+  `rsync --delete` script) is still in the repo, `concierge backup status`
+  flags it, and `install.sh` removes it on the owning machine and prints the
+  upgrade order: the machine that owns the single-machine repo first, other
+  machines after. (#30)
+
 ## [0.9.0] — 2026-09-22
 
 ### Added
@@ -241,6 +254,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.9.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.1
 [0.9.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.0
 [0.8.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.7.0
