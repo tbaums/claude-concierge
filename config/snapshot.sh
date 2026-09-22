@@ -28,7 +28,9 @@
 #                       one stat, no tmux queries, so the 5s status tick can
 #                       call it as a backstop for free
 #    --retire NAME      the session just closed: remember it was deliberately
-#                       killed, so a later restore doesn't resurrect it
+#                       killed, so a later restore doesn't resurrect it.
+#                       The manifest is re-captured BEFORE the retired entry is
+#                       written, so callers poll the retired file as "done".
 #    --unretire NAME    the session just came back: forget that
 #
 #  Overrides, for tests: CONCIERGE_SOCK, CONCIERGE_SESSION, CONCIERGE_MANIFEST,
@@ -177,9 +179,12 @@ forget() {                          # drop $1's line from the retired list
   grep -v "^$1	" "$RETIRED" > "$tmpr" 2>/dev/null
   [ -f "$tmpr" ] && mv "$tmpr" "$RETIRED" 2>/dev/null || rm -f "$tmpr"
 }
+# Eligibility is judged against the manifest as it stands before re-capture;
+# the retired entry itself is written last (below), as the completion signal.
+RETIRE_OK=0
 if [ -n "$RETIRE" ] && had_row "$RETIRE"; then
   forget "$RETIRE"
-  printf '%s\t%s\n' "$RETIRE" "$(date '+%s')" >> "$RETIRED" 2>/dev/null || true
+  RETIRE_OK=1
 fi
 [ -n "$UNRETIRE" ] && forget "$UNRETIRE"
 
@@ -207,6 +212,10 @@ tmp="$MANIFEST.$$"
 } > "$tmp" || { rm -f "$tmp"; exit 1; }
 
 mv "$tmp" "$MANIFEST" || { rm -f "$tmp"; exit 1; }
+
+if [ "$RETIRE_OK" = 1 ]; then
+  printf '%s\t%s\n' "$RETIRE" "$(date '+%s')" >> "$RETIRED" 2>/dev/null || true
+fi
 
 [ "$QUIET" = 1 ] && exit 0
 rows="$(grep -cv '^#' "$MANIFEST" 2>/dev/null || printf 0)"
