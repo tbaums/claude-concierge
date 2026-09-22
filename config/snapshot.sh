@@ -62,11 +62,14 @@ T() { tmux -L "$SOCK" "$@"; }
 # The command line to restore a pane with. A pane's own pid is the `zsh -c`
 # wrapper, which carries no flags at all — `ps -p #{pane_pid}` silently reports
 # an empty model, and a re-snapshot after a restore writes that emptiness back.
-# So descend through the children until a claude command line turns up.
+# So descend through the children until a claude command line turns up. Only
+# the first token counts: a launcher like `pane-claude`, or a cwd or env
+# assignment mentioning claude, must not stop the descent short of the real one.
 claude_cmd() {
-  local out c
+  local out c tok
   out="$(ps -ww -o command= -p "$1" 2>/dev/null)"
-  case "$out" in *claude*) printf '%s' "$out"; return 0 ;; esac
+  tok="${out%% *}"
+  case "$tok" in claude|*/claude) printf '%s' "$out"; return 0 ;; esac
   for c in $(pgrep -P "$1" 2>/dev/null); do
     claude_cmd "$c" && return 0
   done

@@ -566,7 +566,9 @@ if have tmux; then
   mkdir -p "$SNAP/bin" "$SNAP/w1" "$SNAP/w2"
   # A fake claude that stays alive: the real one is found by walking a pane's
   # children for a claude command line, and this is found exactly the same way.
-  printf '#!/bin/sh\nsleep 300\n' > "$FAKE"; chmod +x "$FAKE"
+  # It execs under its own argv (as the real binary shows up in ps), not as
+  # `/bin/sh …/claude`, which snapshot rightly refuses to take for claude.
+  printf '#!/bin/bash\nexec -a "$0${*:+ $*}" cat\n' > "$FAKE"; chmod +x "$FAKE"
   ST() { tmux -L "$SSOCK" "$@"; }
   snap() { ( export CONCIERGE_SOCK="$SSOCK" CONCIERGE_MANIFEST="$MANIFEST"
              sh "$REPO/config/snapshot.sh" >/dev/null 2>&1 ); }
@@ -633,15 +635,18 @@ if have tmux; then
   ST kill-session -t work 2>/dev/null; ST kill-session -t web 2>/dev/null
   ST kill-session -t grid 2>/dev/null || true
   ST kill-pane -t concierge.1 2>/dev/null
+  # Flags are argv text, so quote each word before the pane's shell sees it (as
+  # restore.sh does) — a raw `pipe | inside` would become a shell pipeline.
+  qflags() { local w; for w in $1; do printf ' %q' "$w"; done; }
   restore_stub() {  # replays a manifest; parses by record, never by token count
     local kind name cwd model rest parent title first m
     # Sessions first — a grid can only attach to tiles that already exist.
     while IFS='|' read -r kind name cwd model rest; do
-      ST new-session -d -s "$name" -c "$cwd" "$FAKE $rest"
+      ST new-session -d -s "$name" -c "$cwd" "$FAKE$(qflags "$rest")"
     done < <(grep '^SESSION|' "$SNAP/before")
     # Splits carry one more fixed field before the trailing flags.
     while IFS='|' read -r kind parent title cwd model rest; do
-      ST split-window -d -t "$parent" -c "$cwd" "$FAKE $rest"
+      ST split-window -d -t "$parent" -c "$cwd" "$FAKE$(qflags "$rest")"
     done < <(grep '^SPLIT|' "$SNAP/before")
     # Then the grids, one pane per member, in the recorded order.
     while IFS='|' read -r kind name cols rest; do
@@ -770,7 +775,7 @@ $(diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST"))"
 
   ST kill-server 2>/dev/null
   rm -rf "$SNAP"
-  unset -f ST snap rows restore_stub snapf
+  unset -f ST snap rows restore_stub snapf qflags
 else
   bad "tmux not installed (snapshot test skipped)"
 fi
@@ -784,7 +789,7 @@ if have tmux; then
   RMAN="$RST/manifest"
   RFAKE="$RST/bin/claude"
   mkdir -p "$RST/bin" "$RST/a" "$RST/b"
-  printf '#!/bin/sh\nsleep 300\n' > "$RFAKE"; chmod +x "$RFAKE"
+  printf '#!/bin/bash\nexec -a "$0${*:+ $*}" cat\n' > "$RFAKE"; chmod +x "$RFAKE"
   RT() { tmux -L "$RSOCK" "$@"; }
   restore() { ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN" \
                        CONCIERGE_CLAUDE="$RFAKE" CONCIERGE_RESTORE_READY_TIMEOUT=3 \
@@ -930,6 +935,36 @@ if have tmux; then
     && ok "re-snapshot after restore reproduces the same SESSION row" \
     || bad "row drifted: $(grep '^SESSION|meta|' "$RST/manifest3")"
   RT kill-session -t meta 2>/dev/null
+
+  # A pane launched through a wrapper whose NAME contains "claude" (a
+  # `pane-claude` launcher) must still be read off the real claude child: the
+  # pane's own line matched a substring test, so the model came back empty and
+  # the flags came back as the wrapper's shell tail. Snapshot -> restore ->
+  # snapshot must give the same row, with the model filled in.
+  RWRAP="$RST/bin/pane-claude"
+  printf '#!/bin/sh\nexec "%s" --model "${PANE_MODEL:-claude-opus-5}" "$@"\n' "$RFAKE" > "$RWRAP"
+  chmod +x "$RWRAP"
+  RMAN4="$RST/manifest4"
+  RT new-session -d -s wrapped -c "$RST/a" \
+     "PANE_MODEL=claude-sonnet-5 $RWRAP --continue --chrome; exec \$SHELL"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n "$(claude_line wrapped)" ]] && break; sleep 0.3; done
+  ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN4"
+    sh "$REPO/config/snapshot.sh" >/dev/null 2>&1 )
+  wrow="$(grep '^SESSION|wrapped|' "$RMAN4")"
+  [[ "$wrow" == "SESSION|wrapped|$RST/a|claude-sonnet-5|--model claude-sonnet-5 --continue --chrome" ]] \
+    && ok "a wrapper-launched pane is read off the real claude child" \
+    || bad "wrapper row wrong: $wrow"
+  RT kill-session -t wrapped 2>/dev/null
+  ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RMAN4" CONCIERGE_CLAUDE="$RFAKE"
+    sh "$REPO/config/restore.sh" wrapped >/dev/null 2>&1 )
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -n "$(claude_line wrapped)" ]] && break; sleep 0.3; done
+  ( export CONCIERGE_SOCK="$RSOCK" CONCIERGE_MANIFEST="$RST/manifest5"
+    sh "$REPO/config/snapshot.sh" >/dev/null 2>&1 )
+  wrow2="$(grep '^SESSION|wrapped|' "$RST/manifest5")"
+  [[ -n "$wrow" && "$wrow2" == "$wrow" && "$(cut -d'|' -f4 <<<"$wrow")" != "" ]] \
+    && ok "wrapper pane: snapshot -> restore -> snapshot keeps the same row and model" \
+    || bad "wrapper row drifted: '$wrow' -> '$wrow2'"
+  RT kill-session -t wrapped 2>/dev/null
 
   # A session you deliberately killed must not come back, even when a manifest
   # still lists it — a rotated copy, an older capture restored with --force, or
