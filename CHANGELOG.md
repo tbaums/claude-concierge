@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-09-22
+
+### Added
+- **Skills and memory are backed up from every machine.** With
+  `CONCIERGE_BACKUP_REPO` set in `~/.zshenv`, `install.sh` renders and loads a
+  `com.tbaums.claude-backup` launch agent that runs the shipped
+  `config/sync.sh` every 5 minutes: `rsync -aL` (symlinked skills arrive as
+  real files, never dangling `120000` links), a shared `skills/` tree, per-host
+  `memory/<hostname>/` and `settings/<hostname>/settings.json`, a one-time
+  migration of the old single-machine `memory/` layout, `pull --rebase` before
+  push, and never `--delete`. Unset the variable and nothing is installed (one
+  line says so). `concierge backup status` reports agent state, last-commit
+  age and unpushed commits, and flags a repo whose last push is older than
+  `CONCIERGE_BACKUP_STALE_MIN` (60). (#26)
+
+### Fixed
+- **`snapshot.sh --retire` and its test no longer race.** The manifest is
+  re-captured before the retired entry is written, so the retired entry is the
+  completion signal, and `test/run.sh` polls for the manifest condition instead
+  of asserting once — the "killed session is still in the manifest" flake is
+  gone (5/5 back-to-back runs). (#28)
+
 ## [0.8.0] — 2026-09-19
 
 ### Added
@@ -219,6 +241,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.9.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.0
 [0.8.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.6.0
