@@ -1496,7 +1496,11 @@ bsync() { HOME="$BHOME" CONCIERGE_BACKUP_REPO="$BTMP/backup" CONCIERGE_BACKUP_HO
 bsync && ok "sync (no memory dir yet) exits 0" || bad "sync with no memory dir failed"
 grep -q 'no memory dir' "$BTMP/backup/logs/sync.log" \
   && ok "missing memory dir: one log line" || bad "missing memory dir not logged"
-mkdir -p "$MEM"; echo "memory fact" > "$MEM/fact.md"
+grep -q 'belongs to another machine' "$BTMP/backup/logs/sync.log" \
+  && git -C "$BTMP/backup" ls-files --error-unmatch memory/old-note.md >/dev/null 2>&1 \
+  && ok "no local memory: top-level memory/ not migrated, logged" || bad "migrated memory this host doesn't own"
+# This host owns the old layout: its local memory holds the same file.
+mkdir -p "$MEM"; echo "memory fact" > "$MEM/fact.md"; echo "old note" > "$MEM/old-note.md"
 bsync && ok "sync exits 0" || bad "sync failed"
 cd "$BTMP/backup"
 [[ -z "$(git ls-files -s | awk '$1=="120000"')" ]] \
@@ -1536,6 +1540,61 @@ out="$(bstatus)"; rc=$?
 out="$(CONCIERGE_BACKUP_STALE_MIN=300 bstatus)"
 [[ "$out" != *"older than"* ]] && ok "CONCIERGE_BACKUP_STALE_MIN raises the threshold" \
   || bad "CONCIERGE_BACKUP_STALE_MIN ignored"
+
+# Second machine joining a repo whose top-level memory/ another machine wrote.
+seedrepo() {  # $1 = name; old single-machine layout, pushed to its own remote
+  git init -q --bare "$BTMP/$1.git"
+  git clone -q "$BTMP/$1.git" "$BTMP/$1" 2>/dev/null
+  mkdir -p "$BTMP/$1/memory"; echo "other machine's note" > "$BTMP/$1/memory/a.md"
+  ( cd "$BTMP/$1" && git add -A && git commit -qm seed && git push -q -u origin HEAD 2>/dev/null )
+}
+seedrepo foreign
+fsync() { HOME="$BHOME" CONCIERGE_BACKUP_REPO="$BTMP/foreign" CONCIERGE_BACKUP_HOST=testhost bash "$SYNC"; }
+fsync && ok "sync beside foreign top-level memory/ exits 0" || bad "sync beside foreign memory failed"
+cd "$BTMP/foreign"
+[[ "$(git show HEAD:memory/a.md)" == "other machine's note" ]] \
+  && ! git ls-files --error-unmatch memory/testhost/a.md >/dev/null 2>&1 \
+  && git ls-files --error-unmatch memory/testhost/fact.md >/dev/null 2>&1 \
+  && ok "foreign memory/a.md untouched; this host synced into memory/testhost/" \
+  || bad "foreign top-level memory relabelled or host memory missing"
+[[ "$(grep -c 'top-level memory/ belongs to another machine; run the migration there first' logs/sync.log)" -ge 1 ]] \
+  && ok "migration skip logged" || bad "migration skip not logged"
+CONCIERGE_BACKUP_MIGRATE=1 fsync
+git ls-files --error-unmatch memory/testhost/a.md >/dev/null 2>&1 \
+  && [[ -z "$(git ls-files memory/ | grep -E '^memory/[^/]+$')" ]] \
+  && ok "CONCIERGE_BACKUP_MIGRATE=1 forces the migration" || bad "CONCIERGE_BACKUP_MIGRATE=1 ignored"
+cd "$REPO"
+
+# Legacy root sync.sh (pre-0.9.0 writer with rsync --delete): no publish.
+seedrepo legacy
+( cd "$BTMP/legacy" && echo 'rsync -aL --delete ...' > sync.sh && git add sync.sh \
+  && git commit -qm legacy && git push -q 2>/dev/null )
+remote_head="$(git -C "$BTMP/legacy.git" rev-parse HEAD)"
+lsync() { HOME="$BHOME" CONCIERGE_BACKUP_REPO="$BTMP/legacy" CONCIERGE_BACKUP_HOST=testhost bash "$SYNC"; }
+lsync
+cd "$BTMP/legacy"
+[[ "$(git -C "$BTMP/legacy.git" rev-parse HEAD)" == "$remote_head" && "$(git rev-list --count '@{u}..HEAD')" -gt 0 ]] \
+  && ok "legacy root sync.sh: committed locally, nothing pushed" || bad "sync published beside a legacy writer"
+grep -q "legacy writer present at $BTMP/legacy/sync.sh; not publishing until it is removed" logs/sync.log \
+  && ok "legacy writer refusal logged" || bad "legacy writer refusal not logged"
+grep -q 'belongs to another machine' logs/sync.log \
+  && ok "both guards log in the same run" || bad "migration guard silent beside legacy writer"
+cd "$REPO"
+out="$(HOME="$BHOME" CONCIERGE_BACKUP_REPO="$BTMP/legacy" CONCIERGE_LAUNCHCTL="$STUB" \
+  zsh "$REPO/bin/concierge" backup status 2>&1)"
+[[ "$out" == *"STALE: legacy writer present ($BTMP/legacy/sync.sh)"* ]] \
+  && ok "backup status reports the legacy writer" || bad "backup status missed legacy writer: $out"
+out="$(HOME="$BHOME" CONCIERGE_FONT="Menlo 12" CONCIERGE_LAUNCHCTL="$STUB" \
+  CONCIERGE_BACKUP_REPO="$BTMP/legacy" bash "$REPO/install.sh" 2>&1)"
+[[ ! -e "$BTMP/legacy/sync.sh" ]] && ! git -C "$BTMP/legacy" ls-files --error-unmatch sync.sh >/dev/null 2>&1 \
+  && [[ -z "$(git -C "$BTMP/legacy" status --porcelain)" ]] \
+  && ok "install.sh removes the legacy sync.sh in a commit" || bad "install.sh left the legacy sync.sh"
+[[ "$out" == *"Upgrade order: upgrade the machine that owns"* ]] \
+  && ok "install.sh prints the upgrade-order note" || bad "no upgrade-order note: $out"
+lsync
+[[ "$(git -C "$BTMP/legacy" rev-list --count '@{u}..HEAD')" == 0 ]] \
+  && ok "sync publishes once the legacy writer is gone" || bad "sync still not publishing"
+
 unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 rm -rf "$BTMP"
 

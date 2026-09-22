@@ -39,8 +39,21 @@ mkdir -p "$(dirname "$EXCLUDE")"
 grep -qx 'logs/' "$EXCLUDE" 2>/dev/null || echo 'logs/' >> "$EXCLUDE"
 
 # One-time migration: the old single-machine layout kept memory files directly
-# in memory/. Move them into memory/<host>/ as their own commit.
+# in memory/. Move them into memory/<host>/ as their own commit — but only on
+# the machine that wrote them: every top-level file must be byte-identical to
+# the same file in this host's $MEMORY_SRC, or another machine's memory would
+# be relabelled as ours. CONCIERGE_BACKUP_MIGRATE=1 forces it (for the owning
+# machine when the check can't tell, e.g. its local memory is gone).
 top_level="$(git ls-files memory/ | grep -E '^memory/[^/]+$' || true)"
+if [ -n "$top_level" ] && [ "${CONCIERGE_BACKUP_MIGRATE:-}" != 1 ]; then
+  while IFS= read -r f; do
+    if ! cmp -s "$f" "$MEMORY_SRC/${f#memory/}"; then
+      log "top-level memory/ belongs to another machine; run the migration there first"
+      top_level=""
+      break
+    fi
+  done <<< "$top_level"
+fi
 if [ -n "$top_level" ]; then
   mkdir -p "memory/$HOST"
   while IFS= read -r f; do
@@ -77,6 +90,16 @@ git add -A
 if ! git diff --cached --quiet; then
   git commit -q -m "backup: $HOST $(date '+%Y-%m-%d %H:%M')" \
     || { log "commit failed"; exit 1; }
+fi
+
+# A sync.sh at the repo root is the pre-0.9.0 ad hoc backup script (the
+# installed copy lives in ~/.config/claude-concierge and never lands here). It
+# runs `rsync --delete` and would wipe every other machine's data, so publish
+# nothing until the upgraded owner removes it; the local commit above stands,
+# and `concierge backup status` flags it.
+if [ -e "$REPO/sync.sh" ]; then
+  log "legacy writer present at $REPO/sync.sh; not publishing until it is removed"
+  exit 1
 fi
 
 # Push only if there is an upstream and we're ahead of it. Pull --rebase first
