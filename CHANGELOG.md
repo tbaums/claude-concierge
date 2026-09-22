@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] — 2026-09-22
+
+### Fixed
+- **`concierge snapshot` records the real model and flags for wrapper-launched
+  panes.** `claude_cmd()` matched the substring `claude` anywhere in a command
+  line, so a pane started via `pane-claude` (or with `claude` in a path or env
+  assignment) stopped at the wrapper's `zsh -c` line and recorded an empty model
+  and a shell fragment as flags — `restore` would then relaunch every pane on
+  the default model. It now matches only a first token of `claude` or
+  `*/claude` and descends past wrappers; a wrapper snapshot→restore→snapshot
+  regression test covers it. (#32)
+
 ## [0.9.1] — 2026-09-22
 
 ### Fixed
@@ -254,6 +266,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.9.2]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.2
 [0.9.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.1
 [0.9.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.0
 [0.8.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.8.0
