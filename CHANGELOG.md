@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] — 2026-09-22
+
+### Changed
+- **Concierge sessions default to Opus 5.5** (`claude-opus-5-5`) instead of
+  Opus 5. `CONCIERGE_MODEL` in `~/.zshenv` still overrides. (#34)
+
 ## [0.9.2] — 2026-09-22
 
 ### Fixed
@@ -266,6 +272,7 @@ Initial release.
 - Defaults to the Fable model; honors the Claude Code voice tap-to-send setting.
 - `install.sh` (idempotent), local `test/run.sh` (no CI), docs, MIT license.
 
+[0.9.3]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.3
 [0.9.2]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.2
 [0.9.1]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.1
 [0.9.0]: https://github.com/tbaums/claude-concierge/releases/tag/v0.9.0
