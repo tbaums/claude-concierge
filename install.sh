@@ -70,6 +70,35 @@ else
     git clone -q "$BACKUP_REPO" "$BACKUP_DIR" || echo "  (clone failed — fix access and re-run install.sh)"
   fi
   if git -C "$BACKUP_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    # A sync.sh at the repo root is the pre-0.9.0 ad hoc backup script; its
+    # `rsync --delete` wipes other machines' data, and sync.sh refuses to
+    # publish while it is there. This upgrade retires it.
+    order_note=0
+    if [ -e "$BACKUP_DIR/sync.sh" ]; then
+      echo "→ Removing legacy backup writer $BACKUP_DIR/sync.sh"
+      if git -C "$BACKUP_DIR" ls-files --error-unmatch sync.sh >/dev/null 2>&1; then
+        { git -C "$BACKUP_DIR" rm -q sync.sh \
+            && git -C "$BACKUP_DIR" commit -q -m "backup: remove legacy sync.sh (replaced by concierge's sync.sh)" -- sync.sh; } \
+          || echo "  (could not remove it — delete $BACKUP_DIR/sync.sh by hand)"
+      else
+        rm -f "$BACKUP_DIR/sync.sh"
+      fi
+      order_note=1
+    fi
+    # Same ownership check sync.sh makes before its one-time migration.
+    MEM_SRC="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#[/.]#-#g')/memory"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if ! cmp -s "$BACKUP_DIR/$f" "$MEM_SRC/${f#memory/}"; then
+        echo "→ Top-level memory/ in $BACKUP_DIR belongs to another machine; leaving it alone"
+        order_note=1
+        break
+      fi
+    done <<< "$(git -C "$BACKUP_DIR" ls-files memory/ | grep -E '^memory/[^/]+$' || true)"
+    if [ "$order_note" = 1 ]; then
+      echo "  Upgrade order: upgrade the machine that owns the existing single-machine"
+      echo "  backup repo first; run install.sh on other machines afterward."
+    fi
     AGENTS="$HOME/Library/LaunchAgents"
     PLIST="$AGENTS/$LABEL.plist"
     echo "→ Installing backup agent ($PLIST → $BACKUP_DIR, every 5 min)"

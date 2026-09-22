@@ -264,7 +264,21 @@ It commits only when something changed, `git pull --rebase`s, then pushes; a
 rebase conflict aborts that run and shows up as unpushed commits. Logs go to
 `<repo>/logs/` (kept out of commits). A repo still in the old layout (memory
 files directly in `memory/`) is migrated into `memory/<host>/` once, as its own
-commit. Unset `CONCIERGE_BACKUP_REPO` and `install.sh` installs no agent.
+commit — but only on the machine that wrote it: every top-level file must be
+byte-identical to the same file in this machine's local memory. Otherwise the
+top-level files are left alone and the log says `top-level memory/ belongs to
+another machine; run the migration there first`; `CONCIERGE_BACKUP_MIGRATE=1`
+forces the migration on the owning machine when the check can't tell. Unset
+`CONCIERGE_BACKUP_REPO` and `install.sh` installs no agent.
+
+**Upgrade order for a shared repo:** upgrade the machine that owns the existing
+single-machine repo first; run `install.sh` on other machines afterward. A
+`sync.sh` at the backup repo's root is the pre-0.9.0 ad hoc backup script,
+whose `rsync --delete` wipes other machines' memory and skills; while it is
+there `sync.sh` still commits locally but neither pulls nor pushes, and logs
+`legacy writer present at <repo>/sync.sh; not publishing until it is removed`.
+`install.sh` removes that file (as a commit) and prints the upgrade-order note,
+as it also does when it finds top-level `memory/` this machine doesn't own.
 
 A clean log is not proof the backup works, so check outcomes:
 
@@ -275,7 +289,7 @@ concierge backup status
 It prints whether the agent is loaded, the age of the last commit, the number
 of unpushed commits, and the age of the last successful sync, and exits 1 with
 a `STALE:` line when the agent is unloaded, commits are unpushed, a symlink was
-committed instead of content, or the last good sync is older than
+committed instead of content, a legacy root `sync.sh` is present, or the last good sync is older than
 `CONCIERGE_BACKUP_STALE_MIN` minutes (default 60).
 
 **Linux** (not implemented): the equivalent is a systemd user timer —

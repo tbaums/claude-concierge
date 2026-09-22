@@ -83,6 +83,8 @@ status() {
     problems+=("no successful sync recorded yet")
   fi
 
+  [ -e "$dir/sync.sh" ] && problems+=("legacy writer present ($dir/sync.sh)")
+
   local links
   links="$(git -C "$dir" ls-files -s | awk '$1 == "120000" {print $4}')"
   if [ -n "$links" ]; then
