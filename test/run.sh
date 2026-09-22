@@ -762,6 +762,7 @@ $(diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST"))"
   grep -qE "^auto	[0-9]+$" "$HRET" 2>/dev/null \
     && ok "session-closed retires the killed session, with a timestamp" \
     || bad "the close hook did not retire it: $(cat "$HRET" 2>/dev/null)"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '^SESSION|auto|' "$HMAN" 2>/dev/null || break; sleep 0.5; done
   grep -q '^SESSION|auto|' "$HMAN" 2>/dev/null \
     && bad "the killed session is still in the manifest" \
     || ok "the manifest is re-captured on close, without the killed session"
