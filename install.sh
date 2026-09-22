@@ -7,6 +7,8 @@
 #  Installs the config into ~/.config/claude-concierge, the launcher into
 #  ~/.local/bin/concierge, and the iTerm2 dynamic profile. Idempotent — safe to
 #  re-run to update an existing install. Set CONCIERGE_FONT to override the font.
+#  Set CONCIERGE_BACKUP_REPO (in ~/.zshenv) to also install the 5-minute
+#  ~/.claude skills/memory/settings backup launch agent.
 # ───────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -18,9 +20,9 @@ FONT="${CONCIERGE_FONT:-MonaspaceNeonNF-Regular 15}"
 
 echo "→ Installing config to $CFG"
 mkdir -p "$CFG"
-cp "$REPO_DIR"/config/{tmux.conf,start.sh,clip.sh,logsink.sh,session-menu.sh,status-model.sh,model-label.sh,snapshot.sh,restore.sh,handles.sh} "$CFG/"
+cp "$REPO_DIR"/config/{tmux.conf,start.sh,clip.sh,logsink.sh,session-menu.sh,status-model.sh,model-label.sh,snapshot.sh,restore.sh,handles.sh,sync.sh,backup.sh} "$CFG/"
 cp "$REPO_DIR/VERSION" "$CFG/VERSION"
-chmod +x "$CFG"/{start.sh,clip.sh,logsink.sh,session-menu.sh,status-model.sh,snapshot.sh,restore.sh,handles.sh}
+chmod +x "$CFG"/{start.sh,clip.sh,logsink.sh,session-menu.sh,status-model.sh,snapshot.sh,restore.sh,handles.sh,sync.sh,backup.sh}
 
 echo "→ Installing launcher to $BIN/concierge"
 mkdir -p "$BIN"
@@ -49,6 +51,50 @@ fi
 echo "→ Generating iTerm2 profile (font: $FONT)"
 mkdir -p "$PROFILES"
 python3 "$REPO_DIR/config/iterm-profile.py" --font "$FONT" --start "$CFG/start.sh"
+
+# Backup agent: off-machine copy of ~/.claude skills, memory and settings.
+# Like CONCIERGE_MODEL/CONCIERGE_FONT the knob lives in ~/.zshenv; read it from
+# there if this shell didn't export it.
+BACKUP_REPO="${CONCIERGE_BACKUP_REPO:-}"
+if [ -z "$BACKUP_REPO" ] && command -v zsh >/dev/null 2>&1; then
+  BACKUP_REPO="$(zsh -c 'print -r -- "${CONCIERGE_BACKUP_REPO-}"' 2>/dev/null || true)"
+fi
+if [ -z "$BACKUP_REPO" ]; then
+  echo "→ CONCIERGE_BACKUP_REPO not set; skipping the ~/.claude backup agent"
+else
+  LABEL="com.tbaums.claude-backup"
+  LAUNCHCTL="${CONCIERGE_LAUNCHCTL:-launchctl}"
+  BACKUP_DIR="$(CONCIERGE_BACKUP_REPO="$BACKUP_REPO" bash "$CFG/backup.sh" resolve)"
+  if [ ! -d "$BACKUP_DIR/.git" ] && [ "$BACKUP_DIR" != "$BACKUP_REPO" ]; then
+    echo "→ Cloning $BACKUP_REPO to $BACKUP_DIR"
+    git clone -q "$BACKUP_REPO" "$BACKUP_DIR" || echo "  (clone failed — fix access and re-run install.sh)"
+  fi
+  if git -C "$BACKUP_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    AGENTS="$HOME/Library/LaunchAgents"
+    PLIST="$AGENTS/$LABEL.plist"
+    echo "→ Installing backup agent ($PLIST → $BACKUP_DIR, every 5 min)"
+    mkdir -p "$AGENTS" "$BACKUP_DIR/logs"
+    python3 - "$REPO_DIR/config/$LABEL.plist.tmpl" "$PLIST" "$HOME" "$BACKUP_DIR" "$CFG/sync.sh" <<'PY'
+import sys
+from xml.sax.saxutils import escape
+tmpl, out, home, repo, sync = sys.argv[1:]
+s = open(tmpl).read()
+for k, v in (("@HOME@", home), ("@REPO@", repo), ("@SYNC@", sync)):
+    s = s.replace(k, escape(v))
+open(out, "w").write(s)
+PY
+    "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+    # bootout finishes asynchronously; retry bootstrap briefly so a re-install
+    # over an already-loaded agent replaces it cleanly.
+    for _try in 1 2 3 4 5; do
+      "$LAUNCHCTL" bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && break
+      [ "$_try" = 5 ] && echo "  (launchctl bootstrap failed — check: concierge backup status)"
+      sleep 1
+    done
+  else
+    echo "⚠  $BACKUP_DIR is not a git repo; backup agent not installed"
+  fi
+fi
 
 case ":$PATH:" in
   *":$BIN:"*) ;;
