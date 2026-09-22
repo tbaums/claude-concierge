@@ -1406,13 +1406,137 @@ IHOME="$(mktemp -d)"
 # skipped — the test must never trigger a real `brew install`.
 mkdir -p "$IHOME/Library/Fonts"
 : > "$IHOME/Library/Fonts/MonaspaceNeonNF-Regular.otf"
-if HOME="$IHOME" CONCIERGE_FONT="Menlo 12" bash "$REPO/install.sh" >/dev/null 2>&1; then :; fi
+if HOME="$IHOME" CONCIERGE_FONT="Menlo 12" env -u CONCIERGE_BACKUP_REPO bash "$REPO/install.sh" >/dev/null 2>&1; then :; fi
 IBIN="$IHOME/.local/bin"
 [[ -x "$IBIN/doc" ]] && ok "install.sh installs bin/doc (executable)" \
   || bad "install.sh did not install doc"
 [[ -x "$IBIN/doc-view" ]] && ok "install.sh installs bin/doc-view (executable)" \
   || bad "install.sh did not install doc-view"
 rm -rf "$IHOME"
+
+# 8) ~/.claude backup: plist templating, sync -L, migration, status --------
+echo "› backup (install / sync / status)"
+for f in config/sync.sh config/backup.sh; do
+  bash -n "$REPO/$f" 2>/dev/null && ok "bash -n $f" || bad "bash -n $f"
+done
+BTMP="$(mktemp -d)"
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+# Stub launchctl: records calls; `print` succeeds only once bootstrapped.
+STUB="$BTMP/launchctl"
+cat > "$STUB" <<STUBEOF
+#!/bin/bash
+echo "\$*" >> "$BTMP/launchctl.log"
+case "\$1" in
+  bootstrap) touch "$BTMP/loaded" ;;
+  bootout) rm -f "$BTMP/loaded" ;;
+  print) [ -f "$BTMP/loaded" ] ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+BHOME="$BTMP/home"; mkdir -p "$BHOME/Library/Fonts"
+: > "$BHOME/Library/Fonts/MonaspaceNeonNF-Regular.otf"
+
+# Unset → no agent, one line saying so.
+out="$(HOME="$BHOME" CONCIERGE_FONT="Menlo 12" CONCIERGE_LAUNCHCTL="$STUB" \
+  env -u CONCIERGE_BACKUP_REPO bash "$REPO/install.sh" 2>&1)"
+[[ "$(grep -c 'CONCIERGE_BACKUP_REPO not set' <<< "$out")" == 1 ]] \
+  && ok "unset CONCIERGE_BACKUP_REPO: install says so in one line" \
+  || bad "unset CONCIERGE_BACKUP_REPO: no skip line"
+[[ ! -e "$BHOME/Library/LaunchAgents/com.tbaums.claude-backup.plist" && ! -e "$BTMP/launchctl.log" ]] \
+  && ok "unset CONCIERGE_BACKUP_REPO: no plist, no launchctl" \
+  || bad "unset CONCIERGE_BACKUP_REPO still installed an agent"
+
+# Sandbox backup repo: a bare "remote" plus a clone in the old single-machine
+# layout (memory files at the top level of memory/).
+git init -q --bare "$BTMP/remote.git"
+git clone -q "$BTMP/remote.git" "$BTMP/backup" 2>/dev/null
+mkdir -p "$BTMP/backup/memory"
+echo "old note" > "$BTMP/backup/memory/old-note.md"
+( cd "$BTMP/backup" && git add -A && git commit -qm seed && git push -q -u origin HEAD 2>/dev/null )
+
+for run in 1 2; do
+  HOME="$BHOME" CONCIERGE_FONT="Menlo 12" CONCIERGE_LAUNCHCTL="$STUB" \
+    CONCIERGE_BACKUP_REPO="$BTMP/backup" bash "$REPO/install.sh" >/dev/null 2>&1
+done
+PL="$BHOME/Library/LaunchAgents/com.tbaums.claude-backup.plist"
+if [[ -f "$PL" ]]; then
+  ok "install renders the plist into ~/Library/LaunchAgents"
+  plutil -lint "$PL" >/dev/null 2>&1 && ok "rendered plist lints" || bad "rendered plist fails plutil -lint"
+  ! grep -q '@[A-Z]*@' "$PL" && ok "no placeholders left in plist" || bad "placeholders left in plist"
+  [[ "$(plutil -extract EnvironmentVariables.HOME raw "$PL")" == "$BHOME" ]] \
+    && ok "plist HOME = \$HOME" || bad "plist HOME wrong"
+  [[ "$(plutil -extract EnvironmentVariables.CONCIERGE_BACKUP_REPO raw "$PL")" == "$BTMP/backup" \
+     && "$(plutil -extract WorkingDirectory raw "$PL")" == "$BTMP/backup" ]] \
+    && ok "plist repo + WorkingDirectory = CONCIERGE_BACKUP_REPO" || bad "plist repo wrong"
+  [[ "$(plutil -extract ProgramArguments.1 raw "$PL")" == "$BHOME/.config/claude-concierge/sync.sh" ]] \
+    && ok "plist runs the shipped sync.sh" || bad "plist sync path wrong"
+  [[ "$(plutil -extract StartInterval raw "$PL")" == 300 ]] \
+    && ok "plist StartInterval 300" || bad "plist StartInterval wrong"
+else
+  bad "install did not render the plist"
+fi
+[[ "$(grep -c '^bootout' "$BTMP/launchctl.log")" == 2 && "$(grep -c '^bootstrap' "$BTMP/launchctl.log")" == 2 \
+   && "$(tail -1 "$BTMP/launchctl.log")" == bootstrap* ]] \
+  && ok "re-install does bootout + bootstrap each time" || bad "launchctl calls wrong: $(tr '\n' ';' < "$BTMP/launchctl.log")"
+
+# ~/.claude fixtures: a plain skill, a skill symlinked into another directory
+# (with an executable), memory, settings. Synthetic content only.
+mkdir -p "$BHOME/.claude/skills/plain" "$BTMP/elsewhere/linked"
+echo "plain skill" > "$BHOME/.claude/skills/plain/SKILL.md"
+echo "linked skill" > "$BTMP/elsewhere/linked/SKILL.md"
+printf '#!/bin/sh\necho hi\n' > "$BTMP/elsewhere/linked/run.sh"; chmod +x "$BTMP/elsewhere/linked/run.sh"
+ln -s "$BTMP/elsewhere/linked" "$BHOME/.claude/skills/linked"
+echo "transcript" > "$BHOME/.claude/skills/plain/x.jsonl"
+MEM="$BHOME/.claude/projects/$(printf '%s' "$BHOME" | sed 's#[/.]#-#g')/memory"
+echo '{"permissions":{}}' > "$BHOME/.claude/settings.json"
+
+SYNC="$BHOME/.config/claude-concierge/sync.sh"
+bsync() { HOME="$BHOME" CONCIERGE_BACKUP_REPO="$BTMP/backup" CONCIERGE_BACKUP_HOST=testhost bash "$SYNC"; }
+bsync && ok "sync (no memory dir yet) exits 0" || bad "sync with no memory dir failed"
+grep -q 'no memory dir' "$BTMP/backup/logs/sync.log" \
+  && ok "missing memory dir: one log line" || bad "missing memory dir not logged"
+mkdir -p "$MEM"; echo "memory fact" > "$MEM/fact.md"
+bsync && ok "sync exits 0" || bad "sync failed"
+cd "$BTMP/backup"
+[[ -z "$(git ls-files -s | awk '$1=="120000"')" ]] \
+  && ok "no mode-120000 symlinks in the backup" || bad "symlink committed as 120000"
+[[ "$(git ls-files -s skills/linked/SKILL.md | cut -d' ' -f1)" == 100644 \
+   && "$(git ls-files -s skills/linked/run.sh | cut -d' ' -f1)" == 100755 ]] \
+  && ok "symlinked skill lands as real files (100644/100755)" || bad "symlinked skill content missing"
+[[ -z "$(git ls-files '*.jsonl')" ]] && ok "*.jsonl excluded" || bad "*.jsonl was backed up"
+git ls-files --error-unmatch memory/testhost/old-note.md >/dev/null 2>&1 \
+  && [[ -z "$(git ls-files memory/ | grep -E '^memory/[^/]+$')" ]] \
+  && ok "top-level memory/ migrated into memory/testhost/" || bad "memory migration missing"
+mig="$(git log --format=%H --grep='move memory/ into memory/testhost/')"
+[[ -n "$mig" && "$(git show --format= --name-status "$mig" | cut -c1 | sort -u)" == R ]] \
+  && ok "migration is its own commit (rename only)" || bad "migration not a separate commit"
+git ls-files --error-unmatch memory/testhost/fact.md settings/testhost/settings.json >/dev/null 2>&1 \
+  && ok "memory + settings land under <host>/" || bad "memory/settings not backed up per host"
+[[ -z "$(git ls-files logs)" ]] && ok "logs/ never committed" || bad "logs/ committed"
+[[ "$(git rev-list --count '@{u}..HEAD')" == 0 ]] && ok "sync pushed to the remote" || bad "sync did not push"
+n="$(git rev-list --count HEAD)"; bsync
+[[ "$(git rev-list --count HEAD)" == "$n" ]] && ok "no-op sync makes no commit" || bad "no-op sync committed"
+cd "$REPO"
+
+bstatus() { HOME="$BHOME" CONCIERGE_BACKUP_REPO="$BTMP/backup" CONCIERGE_LAUNCHCTL="$STUB" \
+  zsh "$REPO/bin/concierge" backup status 2>&1; }
+# bin/concierge execs the installed backup.sh, which install.sh put in $BHOME.
+out="$(bstatus)"; rc=$?
+[[ $rc == 0 && "$out" == *"agent:         loaded"* && "$out" == *"last commit:   0m ago"* \
+   && "$out" == *"unpushed:      0"* && "$out" == *OK ]] \
+  && ok "backup status: loaded, last-commit age, 0 unpushed, OK" || bad "backup status healthy case: $out"
+touch -t "$(date -v-2H +%Y%m%d%H%M)" "$BTMP/backup/logs/last-ok"
+( cd "$BTMP/backup" && echo x > extra && git add extra && git commit -qm local )
+rm -f "$BTMP/loaded"
+out="$(bstatus)"; rc=$?
+[[ $rc == 1 && "$out" == *"NOT loaded"* && "$out" == *"unpushed:      1"* \
+   && "$out" == *"STALE: last good sync older than 60m"* ]] \
+  && ok "backup status flags unloaded agent, unpushed commit, staleness" || bad "backup status stale case: $out"
+out="$(CONCIERGE_BACKUP_STALE_MIN=300 bstatus)"
+[[ "$out" != *"older than"* ]] && ok "CONCIERGE_BACKUP_STALE_MIN raises the threshold" \
+  || bad "CONCIERGE_BACKUP_STALE_MIN ignored"
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+rm -rf "$BTMP"
 
 # 9) VERSION matches the latest CHANGELOG entry ------------------------------
 echo "› version"

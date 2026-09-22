@@ -17,6 +17,9 @@
 #    restore   bring that working set back — everything absent, or named
 #              sessions / a named --dash. Also --list, --dry-run, --force.
 #              On demand only: nothing is ever restored for you.
+#    backup status  health of the ~/.claude skills/memory/settings backup
+#              (CONCIERGE_BACKUP_REPO): agent loaded, last-commit age,
+#              unpushed commits, staleness.
 #
 #  By default the concierge resumes your previous conversation, so a crash or
 #  reboot picks up exactly where you left off.
@@ -30,6 +33,9 @@ if [[ "${1-}" == "snapshot" ]]; then
 fi
 if [[ "${1-}" == "restore" ]]; then
   exec "$CFG/restore.sh" "${@:2}"
+fi
+if [[ "${1-}" == "backup" ]]; then
+  exec "$CFG/backup.sh" "${@:2}"
 fi
 
 for arg in "$@"; do

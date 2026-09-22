@@ -7,6 +7,7 @@ Everything the Concierge installs lives in three places:
 | `~/.config/claude-concierge/` | `tmux.conf`, `start.sh`, `clip.sh`, `logsink.sh`, `VERSION` |
 | `~/.local/bin/concierge` | the launcher you invoke |
 | `~/.local/bin/tmux` | wrapper that defaults new tmux sessions onto the Concierge socket |
+| `~/Library/LaunchAgents/com.tbaums.claude-backup.plist` | backup agent — only when `CONCIERGE_BACKUP_REPO` is set ([below](#backing-up-skills-memory-and-settings)) |
 | `~/Library/Application Support/iTerm2/DynamicProfiles/claude-concierge.json` | the themed iTerm2 profile |
 
 ## The model (defaults to Opus 5)
@@ -231,6 +232,58 @@ line in `~/.config/claude-concierge/start.sh`.
 - Pane transcript: `~/.claude/concierge-logs/YYYY-MM-DD.log`, ANSI-stripped,
   auto-pruned after 60 days (`find -mtime +60 -delete` on launch). Change the
   retention window in `start.sh`.
+
+## Backing up skills, memory and settings
+
+`~/.claude/skills`, Claude's memory and `~/.claude/settings.json` survive a
+reboot but not a lost machine. Point `CONCIERGE_BACKUP_REPO` at a private git
+repo (a local clone, or a git URL that `install.sh` clones to
+`~/claude-backup`; `CONCIERGE_BACKUP_DIR` overrides) and re-run `install.sh`:
+
+```sh
+echo 'export CONCIERGE_BACKUP_REPO=~/claude-backup' >> ~/.zshenv
+bash install.sh
+```
+
+It renders `~/Library/LaunchAgents/com.tbaums.claude-backup.plist` from
+`config/com.tbaums.claude-backup.plist.tmpl` and loads it (`launchctl bootout`
++ `bootstrap`, so re-installing is safe). Every 5 minutes it runs the shipped
+`~/.config/claude-concierge/sync.sh`, which copies into the repo:
+
+| Repo path | From |
+|-----------|------|
+| `skills/` | `~/.claude/skills/` — shared by every machine, additive |
+| `memory/<host>/` | `~/.claude/projects/<sanitised $HOME>/memory/` (skipped with a log line if absent) |
+| `settings/<host>/settings.json` | `~/.claude/settings.json` |
+
+`<host>` is `hostname -s`, lowercased. Transcripts (`*.jsonl`) are never
+copied, and nothing is ever deleted from the repo (no `--delete`): a skill
+removed on one machine is removed from the repo by hand. Symlinked skills are
+followed (`rsync -aL`), so the repo holds their content, never a dangling link.
+It commits only when something changed, `git pull --rebase`s, then pushes; a
+rebase conflict aborts that run and shows up as unpushed commits. Logs go to
+`<repo>/logs/` (kept out of commits). A repo still in the old layout (memory
+files directly in `memory/`) is migrated into `memory/<host>/` once, as its own
+commit. Unset `CONCIERGE_BACKUP_REPO` and `install.sh` installs no agent.
+
+A clean log is not proof the backup works, so check outcomes:
+
+```sh
+concierge backup status
+```
+
+It prints whether the agent is loaded, the age of the last commit, the number
+of unpushed commits, and the age of the last successful sync, and exits 1 with
+a `STALE:` line when the agent is unloaded, commits are unpushed, a symlink was
+committed instead of content, or the last good sync is older than
+`CONCIERGE_BACKUP_STALE_MIN` minutes (default 60).
+
+**Linux** (not implemented): the equivalent is a systemd user timer —
+`~/.config/systemd/user/claude-backup.service` (`Type=oneshot`,
+`Environment=CONCIERGE_BACKUP_REPO=…`, `ExecStart=/bin/bash
+%h/.config/claude-concierge/sync.sh`) plus `claude-backup.timer`
+(`OnUnitActiveSec=5min`, `OnBootSec=5min`), enabled with
+`systemctl --user enable --now claude-backup.timer`.
 
 ## Default tmux socket for other tools
 
