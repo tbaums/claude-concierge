@@ -25,7 +25,7 @@ for f in LICENSE README.md RELEASING.md CHANGELOG.md install.sh VERSION \
          bin/concierge bin/tmux bin/doc bin/doc-view config/tmux.conf \
          config/start.sh config/clip.sh config/model-label.sh \
          config/status-model.sh \
-         config/logsink.sh config/iterm-profile.py; do
+         config/logsink.sh config/iterm-profile.py config/unread.sh; do
   [[ -f "$REPO/$f" ]] && ok "exists: $f" || bad "missing: $f"
 done
 
@@ -34,7 +34,7 @@ echo "› syntax"
 for f in bin/concierge config/start.sh bin/doc bin/doc-view; do
   zsh -n "$REPO/$f" 2>/dev/null && ok "zsh -n $f" || bad "zsh -n $f"
 done
-for f in config/clip.sh config/logsink.sh config/model-label.sh config/status-model.sh; do
+for f in config/clip.sh config/logsink.sh config/model-label.sh config/status-model.sh config/unread.sh; do
   sh -n "$REPO/$f" 2>/dev/null && ok "sh -n $f" || bad "sh -n $f"
 done
 bash -n "$REPO/install.sh" && ok "bash -n install.sh" || bad "bash -n install.sh"
@@ -1038,7 +1038,8 @@ stub() { printf '#!/bin/sh\ntouch "%s/called"\n%s\n' "$HND" "$1" > "$HND/bin/cla
 hrun() {  # $1 = stop|prompt, $2 = the reply text ("" for the prompt hook)
   ( cd "$HND/w"
     printf '{"last_assistant_message":"%s","transcript_path":"/nonexistent"}' "$2" \
-      | env PATH="$HND/bin:$PATH" CONCIERGE_HANDLES_STATE="$HND/state" ${HENV:-} \
+      | env PATH="$HND/bin:$PATH" CONCIERGE_HANDLES_STATE="$HND/state" \
+            TMUX_PANE= CONCIERGE_CHIME=0 ${HENV:-} \
             sh "$HSH" "$1" 2>/dev/null )
 }
 hstate() { cat "$HND/state"/*.tsv 2>/dev/null; }
@@ -1108,6 +1109,155 @@ grep -q 'CONCIERGE_HANDLES:-1' "$REPO/config/start.sh" \
 
 rm -rf "$HND"
 unset -f stub hrun hstate
+
+# 3i) unread queue: flag on Stop, clear on focus, list/next/ack --------------
+# A scripted tmux server on its own socket, the real tmux.conf hooks, and a
+# real client attached on a pty (python forkpty) so focus and switch-client
+# behave as they do for a person — never the live socket or the real $HOME.
+echo "› unread queue (flag on Stop, clear on focus)"
+if have tmux; then
+  UQ="$(cd "$(mktemp -d)" && pwd -P)"
+  USOCK="cc_unread_$$"
+  mkdir -p "$UQ/home/.config/claude-concierge"
+  cp "$REPO/config/unread.sh" "$UQ/home/.config/claude-concierge/"
+  UT() { tmux -L "$USOCK" "$@"; }
+  UR() { CONCIERGE_SOCK="$USOCK" sh "$REPO/config/unread.sh" "$@"; }
+  UC() { CONCIERGE_SOCK="$USOCK" HOME="$UQ/home" zsh "$REPO/bin/concierge" "$@"; }
+  # Wait (up to ~3s) for a backgrounded hook to land: $1 = pane, $2 = set|clear.
+  uwait() { local i=0 v
+    while [ $i -lt 30 ]; do
+      v="$(UT show -pqv -t "$1" @unread 2>/dev/null)"
+      { [ "$2" = set ] && [ -n "$v" ]; } || { [ "$2" = clear ] && [ -z "$v" ]; } && return 0
+      sleep 0.1; i=$((i + 1))
+    done; return 1; }
+  ulisted() { UR list | grep -q "^$1 "; }
+  HOME="$UQ/home" tmux -L "$USOCK" -f "$REPO/config/tmux.conf" \
+    new-session -d -s concierge -x 160 -y 40 'sleep 120' 2>/dev/null
+  for n in alpha beta gamma; do
+    UT new-session -d -s "$n" "printf 'hello from $n\n\n\n'; sleep 120"
+  done
+  # A dash: alpha and beta as tiles, each a nested client in a grid pane.
+  UT new-session -d -s grid -x 160 -y 40 "env TMUX= TERM=xterm-256color tmux -L $USOCK attach -t alpha"
+  UT split-window -h -d -t grid "env TMUX= TERM=xterm-256color tmux -L $USOCK attach -t beta"
+  # The operator's terminal: a real client on the coordinator, on a pty.
+  python3 - "$USOCK" > /dev/null 2>&1 <<'PY' &
+import os, sys, select, time
+pid, fd = os.forkpty()
+if pid == 0:
+    os.environ['TERM'] = 'xterm-256color'; os.environ.pop('TMUX', None)
+    os.execvp('tmux', ['tmux', '-L', sys.argv[1], 'attach', '-t', 'concierge'])
+end = time.time() + 60
+while time.time() < end:
+    if select.select([fd], [], [], 0.2)[0]:
+        try: os.read(fd, 65536)
+        except OSError: break
+PY
+  UCLIENT=$!
+  sleep 2.5      # past the just-attached grace, for every client above
+  USPATH="$(UT display -p '#{socket_path}')"
+  UCOORD="$(UT display -p -t concierge '#{pane_id}')"
+  UCNAME="$(UT list-clients -t concierge -F '#{client_name}' | head -1)"
+  usess() { UT display -p -c "$UCNAME" '#{client_session}'; }
+
+  # Empty queue: a message, not an error; the status segment renders nothing.
+  out="$(UC unread)"; rc=$?
+  [[ $rc -eq 0 && "$out" == "unread queue is empty" ]] \
+    && ok "empty queue: concierge unread says so, exit 0" || bad "empty queue wrong ($rc): '$out'"
+  [[ -z "$(UR list --short)" ]] && ok "empty queue: the coordinator segment renders nothing" \
+    || bad "empty queue still renders a segment"
+
+  # 1) The Stop hook stamps @unread on its own pane and plays the chime.
+  ( cd "$UQ" && printf '{"last_assistant_message":"short","transcript_path":"/nonexistent"}' \
+      | env TMUX="$USPATH,1,0" TMUX_PANE="$(UT display -p -t gamma '#{pane_id}')" \
+            CONCIERGE_HANDLES=0 CONCIERGE_CHIME="touch $UQ/chimed" sh "$REPO/config/handles.sh" stop )
+  uwait gamma set && [[ "$(UT show -pqv -t gamma @unread)" =~ ^[0-9]+$ ]] \
+    && ok "Stop hook sets @unread (epoch) on its pane" || bad "Stop hook did not set @unread"
+  i=0; while [ ! -f "$UQ/chimed" ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done
+  [[ -f "$UQ/chimed" ]] && ok "Stop hook plays the chime" || bad "Stop hook did not chime"
+
+  # 5) Listed oldest first, with age and last non-blank line; only unread panes.
+  UT set -p -t beta @unread "$(( $(date +%s) - 400 ))"
+  UT set -p -t alpha @unread "$(( $(date +%s) - 90 ))"
+  UT set -p -t gamma @unread "$(date +%s)"
+  out="$(UC unread)"
+  [[ "$(printf '%s\n' "$out" | awk '{print $1}' | paste -sd, -)" == "beta,alpha,gamma" ]] \
+    && ok "concierge unread lists oldest first" || bad "order wrong: '$out'"
+  [[ "$out" == *"beta "*" 6m  hello from beta"* && "$out" == *" 1m  hello from alpha"* ]] \
+    && ok "each row carries age and the pane's last line" || bad "age/last line missing: '$out'"
+  [[ "$out" != *concierge* && "$out" != *grid* ]] \
+    && ok "panes without @unread are not listed" || bad "listed a read pane: '$out'"
+  [[ "$(UR list --short)" == "unread 3: beta, alpha, gamma " ]] \
+    && ok "coordinator segment: unread 3: beta, alpha, gamma" || bad "short form: '$(UR list --short)'"
+
+  # 3) Tiles on screen are not read. The operator looks at the grid; focus
+  #    settles on the alpha tile, which clears alpha — beta, visible beside
+  #    it, stays unread. A fresh Stop on beta stays unread while unfocused.
+  UT switch-client -t grid
+  UT select-pane -t grid.right; UT select-pane -t grid.left
+  UT set -p -t beta @unread "$(( $(date +%s) - 400 ))"
+  uwait alpha clear && ok "focusing a dash tile clears that pane" || bad "focused tile kept @unread"
+  sleep 0.5
+  [[ -n "$(UT show -pqv -t beta @unread 2>/dev/null)" ]] \
+    && ok "a pane visible in a dash tile but never focused stays unread" \
+    || bad "an unfocused dash tile was cleared"
+  # 2) Clicking into it clears it.
+  UT select-pane -t grid.right
+  uwait beta clear && ok "focusing the tile's pane (click) clears @unread" || bad "click did not clear"
+
+  # 6) next: focus the oldest unread; it drops out of the queue.
+  UT switch-client -t concierge
+  UT set -p -t beta @unread "$(( $(date +%s) - 400 ))"
+  TMUX="$USPATH,1,0" TMUX_PANE="$UCOORD" CONCIERGE_SOCK="$USOCK" HOME="$UQ/home" \
+    zsh "$REPO/bin/concierge" next
+  [[ "$(usess)" == beta ]] \
+    && ok "concierge next switches the client to the oldest unread" || bad "next did not switch"
+  ! ulisted beta && ulisted gamma \
+    && ok "after next, concierge unread no longer lists it" || bad "next left it listed: '$(UR list)'"
+  # 2) Switching sessions (client-session-changed) clears the landing pane.
+  UT switch-client -t gamma
+  uwait gamma clear && ok "switching to a session clears its pane" || bad "session switch did not clear"
+  # Outside any client, next names the session instead of failing.
+  UT set -p -t alpha @unread 1
+  out="$(unset TMUX; UC next)"; rc=$?
+  [[ $rc -eq 0 && "$out" == alpha ]] && [[ -n "$(UT show -pqv -t alpha @unread)" ]] \
+    && ok "next outside a client prints the session and leaves it unread" \
+    || bad "next outside a client wrong ($rc): '$out'"
+
+  # 4) ack clears without focusing; --all clears everything; unknown errors.
+  UT set -p -t beta @unread 2; UT set -p -t gamma @unread 3
+  UC ack beta
+  [[ -z "$(UT show -pqv -t beta @unread)" && -n "$(UT show -pqv -t gamma @unread)" ]] \
+    && ok "concierge ack <session> clears just that pane" || bad "ack wrong"
+  [[ "$(usess)" == gamma ]] \
+    && ok "ack does not move the client" || bad "ack moved focus"
+  before="$(UR list)"
+  UC ack nosuch 2>/dev/null; rc1=$?
+  UC next nosuch >/dev/null 2>&1; rc2=$?
+  [[ $rc1 -ne 0 && $rc2 -ne 0 && "$(UR list)" == "$before" ]] \
+    && ok "ack/next with an unknown session error out and touch nothing" \
+    || bad "unknown session: ack=$rc1 next=$rc2"
+  UC ack --all
+  [[ "$(UC unread)" == "unread queue is empty" ]] \
+    && ok "concierge ack --all clears every pane" || bad "ack --all left: '$(UR list)'"
+
+  # Pane closes while unread: the flag goes with it.
+  UT set -p -t gamma @unread 4; UT kill-session -t gamma
+  [[ "$(UC unread)" == "unread queue is empty" ]] \
+    && ok "a closed unread pane leaves nothing behind" || bad "closed pane still listed"
+
+  # Wiring: status bar, install list, dispatch.
+  grep -q 'status-right "#{?@unread,.*● UNREAD' "$REPO/config/tmux.conf" \
+    && grep -q 'status-right .*#(\$UNREAD list --short)' "$REPO/config/tmux.conf" \
+    && ok "status-right renders ● UNREAD and the coordinator queue" || bad "status-right lacks unread segments"
+  grep -q 'unread.sh' "$REPO/install.sh" && ok "install.sh copies unread.sh" || bad "install.sh misses unread.sh"
+
+  kill "$UCLIENT" 2>/dev/null; wait "$UCLIENT" 2>/dev/null
+  UT kill-server 2>/dev/null
+  rm -rf "$UQ"
+  unset -f UT UR UC uwait ulisted
+else
+  bad "tmux not installed (unread queue untested)"
+fi
 
 # 4) logsink strips ANSI ----------------------------------------------------
 echo "› logsink (ANSI strip)"
