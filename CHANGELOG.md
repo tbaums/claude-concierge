@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-10-05
+
+### Added
+- **Unread queue.** The Stop hook now chimes and sets a per-pane `@unread`
+  flag when a session's Claude turn finishes; focusing the pane clears it
+  (a dash-grid glance does not). New `config/unread.sh` behind
+  `concierge unread` (oldest first, with age), `concierge next` (jump to the
+  oldest unread) and `concierge ack <session>|--all` (clear without
+  focusing). Status-bar segments show `● UNREAD` per session and
+  `unread N: …` on the coordinator. `test/run.sh` drives the hooks against a
+  scripted tmux server with a pty client. (#35, PR #36)
+
 ## [0.9.3] — 2026-09-22
 
 ### Changed
