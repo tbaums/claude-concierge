@@ -20,6 +20,11 @@
 #    backup status  health of the ~/.claude skills/memory/settings backup
 #              (CONCIERGE_BACKUP_REPO): agent loaded, last-commit age,
 #              unpushed commits, staleness.
+#    unread    sessions whose Claude turn finished and you haven't focused
+#              since: oldest first, with age and last line.
+#    next      jump to the oldest unread session (prints its name when run
+#              outside a tmux client).
+#    ack <session> | --all   mark read without focusing.
 #
 #  By default the concierge resumes your previous conversation, so a crash or
 #  reboot picks up exactly where you left off.
@@ -36,6 +41,12 @@ if [[ "${1-}" == "restore" ]]; then
 fi
 if [[ "${1-}" == "backup" ]]; then
   exec "$CFG/backup.sh" "${@:2}"
+fi
+if [[ "${1-}" == "unread" ]]; then
+  exec "$CFG/unread.sh" list "${@:2}"
+fi
+if [[ "${1-}" == "next" || "${1-}" == "ack" ]]; then
+  exec "$CFG/unread.sh" "$@"
 fi
 
 for arg in "$@"; do

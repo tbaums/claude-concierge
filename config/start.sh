@@ -270,6 +270,8 @@ ensure_setting outputStyle '"Concise"' seed 2>/dev/null || true
 # added twice. jq only — merging into a nested hooks array with sed is how you
 # corrupt someone's settings file, and a missing index is a far smaller loss
 # than that. CONCIERGE_HANDLES=0 keeps them out entirely.
+# handles.sh stop also plays the turn-finished chime, so a hand-added Stop hook
+# that only plays that same chime is dropped rather than doubling it.
 ensure_handles_hooks() {
   [ "${CONCIERGE_HANDLES:-1}" = 0 ] && return 0
   command -v jq >/dev/null 2>&1 || return 0
@@ -281,6 +283,8 @@ ensure_handles_hooks() {
   jq --arg stop "$stop" --arg prompt "$prompt" '
         def wired($c): any(.[]?; any(.hooks[]?; .command == $c));
         .hooks //= {}
+      | if .hooks.Stop then .hooks.Stop |= map(select(
+            [.hooks[]?.command] != ["afplay /System/Library/Sounds/Glass.aiff"])) else . end
       | if (.hooks.Stop // []) | wired($stop) then .
         else .hooks.Stop = ((.hooks.Stop // []) + [{hooks: [{type: "command", command: $stop}]}]) end
       | if (.hooks.UserPromptSubmit // []) | wired($prompt) then .

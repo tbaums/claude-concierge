@@ -26,7 +26,13 @@
 #  budget side call, and any failure, timeout or oddity means no index at all
 #  and a silent, ordinary turn.
 #
+#  The Stop hook also marks the turn finished, before anything else and
+#  whatever the index does: it plays the chime and stamps the pane's @unread
+#  option, which config/unread.sh lists and the focus hooks clear. One wired
+#  hook owns both, so there is no hand-edited second Stop hook to drift.
+#
 #  Env: CONCIERGE_HANDLES=0 turns it off outright (no model call);
+#       CONCIERGE_CHIME overrides the chime command (0 = silent);
 #       CONCIERGE_HANDLES_MODEL overrides the extraction model;
 #       CONCIERGE_HANDLES_STATE overrides the state directory (tests).
 # ───────────────────────────────────────────────────────────────────────────
@@ -39,6 +45,16 @@ MIN_CHARS=300           # shorter replies have nothing worth indexing
 MAX_ITEMS=12            # a..l; beyond that, no handle and no note about it
 KEEP_TURNS=5            # how many turns' maps stay resolvable
 TIMEOUT_MS=4000         # hard budget for the extraction call
+
+# Chime, and flag this pane unread until it is focused or acked. Backgrounded
+# and silenced: neither may hold up or alter the turn.
+mark_unread() {
+  local chime="${CONCIERGE_CHIME-afplay /System/Library/Sounds/Glass.aiff}"
+  [ -n "$chime" ] && [ "$chime" != 0 ] && { sh -c "$chime" >/dev/null 2>&1 & }
+  [ -n "${TMUX_PANE:-}" ] && tmux set -p -t "$TMUX_PANE" @unread "$(date +%s)" 2>/dev/null
+  return 0
+}
+[ "$MODE" = stop ] && mark_unread
 
 [ "${CONCIERGE_HANDLES:-1}" = 0 ] && exit 0
 
