@@ -1139,19 +1139,25 @@ if have tmux; then
   # A dash: alpha and beta as tiles, each a nested client in a grid pane.
   UT new-session -d -s grid -x 160 -y 40 "env TMUX= TERM=xterm-256color tmux -L $USOCK attach -t alpha"
   UT split-window -h -d -t grid "env TMUX= TERM=xterm-256color tmux -L $USOCK attach -t beta"
-  # The operator's terminal: a real client on the coordinator, on a pty.
-  python3 - "$USOCK" > /dev/null 2>&1 <<'PY' &
-import os, sys, select, time
+  # A real client on a pty, wide enough that status-right is not cut:
+  # $1 = session, $2 = where the terminal output goes.
+  upty() { python3 - "$USOCK" "$1" "$2" > /dev/null 2>&1 <<'PY'
+import os, sys, select, time, fcntl, termios, struct
 pid, fd = os.forkpty()
 if pid == 0:
     os.environ['TERM'] = 'xterm-256color'; os.environ.pop('TMUX', None)
-    os.execvp('tmux', ['tmux', '-L', sys.argv[1], 'attach', '-t', 'concierge'])
+    os.execvp('tmux', ['tmux', '-L', sys.argv[1], 'attach', '-t', sys.argv[2]])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 250, 0, 0))
+out = open(sys.argv[3], 'ab')
 end = time.time() + 60
 while time.time() < end:
     if select.select([fd], [], [], 0.2)[0]:
-        try: os.read(fd, 65536)
+        try: out.write(os.read(fd, 65536)); out.flush()
         except OSError: break
 PY
+  }
+  # The operator's terminal: a real client on the coordinator.
+  upty concierge /dev/null &
   UCLIENT=$!
   sleep 2.5      # past the just-attached grace, for every client above
   USPATH="$(UT display -p '#{socket_path}')"
@@ -1245,16 +1251,82 @@ PY
   [[ "$(UC unread)" == "unread queue is empty" ]] \
     && ok "a closed unread pane leaves nothing behind" || bad "closed pane still listed"
 
+  # 7) --except: a session's bar lists everyone but itself; past 5 names, +k.
+  for n in alpha beta delta; do UT new-session -d -s "$n" 'sleep 120' 2>/dev/null; done
+  UT set -p -t beta @unread 10; UT set -p -t delta @unread 20
+  [[ "$(UR list --short --except alpha)" == "unread 2: beta, delta " ]] \
+    && ok "--except a read session: unread 2: beta, delta" || bad "--except alpha: '$(UR list --short --except alpha)'"
+  [[ "$(UR list --short --except beta)" == "unread 1: delta " ]] \
+    && ok "--except drops the session's own name and count" || bad "--except beta: '$(UR list --short --except beta)'"
+  UT set -pu -t beta @unread
+  [[ -z "$(UR list --short --except delta)" ]] \
+    && ok "--except leaving nothing renders nothing" || bad "empty post-exclusion queue rendered"
+  UC ack --all
+  for i in 1 2 3 4 5 6 7 8; do
+    UT new-session -d -s "u$i" 'sleep 120'; UT set -p -t "u$i" @unread "$((100 + i))"
+  done
+  [[ "$(UR list --short --except concierge)" == "unread 8: u1, u2, u3, u4, u5 +3 " ]] \
+    && ok "8 unread: first 5 names, then +3" || bad "cap wrong: '$(UR list --short --except concierge)'"
+  for i in 1 2 3 4 5 6 7 8; do UT kill-session -t "u$i"; done
+
+  # 8) A second real client, on delta. Stop hooks run as Claude Code runs them.
+  ustop() {   # $1 = pane id, $2 = chime marker
+    ( cd "$UQ" && printf '{"last_assistant_message":"short","transcript_path":"/nonexistent"}' \
+        | env TMUX="$USPATH,1,0" TMUX_PANE="$1" CONCIERGE_HANDLES=0 \
+              CONCIERGE_CHIME="touch $2" sh "$REPO/config/handles.sh" stop )
+  }
+  uchimed() { local i=0; while [ ! -f "$1" ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done; [ -f "$1" ]; }
+  # A session's live bar, read through tmux: the first expansion starts the
+  # #() job, the second (same command client) reads its output.
+  ubar() { UT display -p -t "$1" '#{E:status-right}' \; run 'sleep 1.5' \; \
+              display -p -t "$1" '#{E:status-right}' | tail -1 | grep -o 'unread [0-9]*: [^#]*'; }
+  UT switch-client -c "$UCNAME" -t concierge
+  UT new-session -d -s echo 'sleep 120'
+  upty delta "$UQ/delta.tty" &
+  UCLIENT2=$!
+  sleep 2.5
+  UDELTA="$(UT display -p -t delta '#{pane_id}')"
+  UT list-clients -t delta -F '#{client_flags}' | grep -q focused \
+    && ok "a second real client is attached to delta, focused" || bad "no focused client on delta"
+  ustop "$(UT display -p -t echo '#{pane_id}')" "$UQ/chime-echo"
+  uwait echo set && ok "Stop in a session with no client still stamps @unread" \
+    || bad "Stop with no focused client did not stamp"
+  [[ "$(ubar delta)" == "unread 1: echo " ]] \
+    && ok "delta's live bar shows the peer queue: unread 1: echo" || bad "delta's bar: '$(ubar delta)'"
+  [[ "$(ubar concierge)" == "unread 1: echo " ]] \
+    && ok "the coordinator's bar still shows the queue" || bad "coordinator bar: '$(ubar concierge)'"
+  i=0
+  until python3 -c 'import re,sys; d=open(sys.argv[1],"rb").read().decode("utf8","replace"); sys.exit("unread 1: echo" not in re.sub(r"\x1b\[[0-9;?]*[A-Za-z]","",d))' \
+        "$UQ/delta.tty" 2>/dev/null || [ $i -ge 80 ]; do sleep 0.1; i=$((i+1)); done
+  [ $i -lt 80 ] && ok "the queue is drawn on delta's real terminal" || bad "delta's terminal never drew the queue"
+  # Finishing in the pane you are watching: chime, but no flag.
+  ustop "$UDELTA" "$UQ/chime-delta"
+  uchimed "$UQ/chime-delta" && ok "Stop in the focused pane still chimes" || bad "focused Stop did not chime"
+  sleep 0.3
+  [[ -z "$(UT show -pqv -t "$UDELTA" @unread)" ]] \
+    && ok "Stop in the focused client's active pane leaves @unread empty" || bad "focused pane was flagged"
+  # ...but a pane in a background window of that same session is not watched.
+  UBG="$(UT new-window -d -P -F '#{pane_id}' -t delta 'sleep 120')"
+  ustop "$UBG" "$UQ/chime-bg"
+  uwait "$UBG" set && ok "Stop in a background window of a focused session still stamps" \
+    || bad "background window of a focused session was skipped"
+  # Delta's own flag never shows in delta's own queue.
+  UT set -p -t "$UDELTA" @unread 5
+  [[ "$(ubar delta)" != *delta* ]] && ok "a session's bar never lists itself" || bad "delta's bar lists delta: '$(ubar delta)'"
+  kill "$UCLIENT2" 2>/dev/null; wait "$UCLIENT2" 2>/dev/null
+  unset -f ustop uchimed ubar
+
   # Wiring: status bar, install list, dispatch.
   grep -q 'status-right "#{?@unread,.*● UNREAD' "$REPO/config/tmux.conf" \
-    && grep -q 'status-right .*#(\$UNREAD list --short)' "$REPO/config/tmux.conf" \
-    && ok "status-right renders ● UNREAD and the coordinator queue" || bad "status-right lacks unread segments"
+    && grep -q "status-right .*#(\$UNREAD list --short --except '#{session_name}')" "$REPO/config/tmux.conf" \
+    && ! grep -q 'status-right .*#{==:#{session_name},concierge}' "$REPO/config/tmux.conf" \
+    && ok "status-right renders ● UNREAD and the peer queue on every session" || bad "status-right lacks unread segments"
   grep -q 'unread.sh' "$REPO/install.sh" && ok "install.sh copies unread.sh" || bad "install.sh misses unread.sh"
 
   kill "$UCLIENT" 2>/dev/null; wait "$UCLIENT" 2>/dev/null
   UT kill-server 2>/dev/null
   rm -rf "$UQ"
-  unset -f UT UR UC uwait ulisted
+  unset -f UT UR UC uwait ulisted upty
 else
   bad "tmux not installed (unread queue untested)"
 fi
