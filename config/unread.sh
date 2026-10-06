@@ -9,9 +9,11 @@
 #  dash tile stays unread until it is focused or acked. The flag is a pane
 #  option, so it lives exactly as long as the pane — no state file.
 #
-#    unread.sh list [--short]   the queue, oldest first, with age + last line
-#                               (--short: one line for the status bar, or
-#                               nothing when the queue is empty)
+#    unread.sh list [--short] [--except <session>]
+#                               the queue, oldest first, with age + last line
+#                               (--short: one line for the status bar, the
+#                               first 5 names then +k, or nothing when the
+#                               queue is empty; --except drops that session)
 #    unread.sh next [session]   focus the oldest unread pane (or <session>);
 #                               outside a tmux client, print its session name
 #    unread.sh ack <session>|--all   clear without focusing
@@ -34,6 +36,8 @@ T() {
   else tmux -L concierge "$@"
   fi
 }
+
+SHORT_MAX=5              # names on the status bar before "+k"
 
 clear_unread() {         # $1 = pane id
   T set -pu -t "$1" @unread 2>/dev/null
@@ -60,12 +64,23 @@ session_exists() {
 }
 
 do_list() {
-  local q now ts s p line
+  local q now ts s p line short='' except='' n names
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --short)  short=1 ;;
+      --except) shift; except="${1-}" ;;
+    esac
+    [ $# -gt 0 ] && shift
+  done
   q="$(queue)"
-  if [ "${1-}" = --short ]; then
+  # The bar on session X lists everyone else: X's own badge already says it.
+  [ -n "$except" ] && q="$(printf '%s\n' "$q" | awk -F'\t' -v x="$except" '$1 != "" && $2 != x')"
+  if [ -n "$short" ]; then
     [ -n "$q" ] || return 0
-    printf 'unread %s: %s \n' "$(printf '%s\n' "$q" | wc -l | tr -d ' ')" \
-      "$(printf '%s\n' "$q" | cut -f2 | paste -sd, - | sed 's/,/, /g')"
+    n="$(printf '%s\n' "$q" | wc -l | tr -d ' ')"
+    names="$(printf '%s\n' "$q" | cut -f2 | head -"$SHORT_MAX" | paste -sd, - | sed 's/,/, /g')"
+    [ "$n" -gt "$SHORT_MAX" ] && names="$names +$((n - SHORT_MAX))"
+    printf 'unread %s: %s \n' "$n" "$names"
     return 0
   fi
   if [ -z "$q" ]; then
@@ -124,6 +139,6 @@ case "$MODE" in
   clear) [ -n "${1-}" ] || exit 2
          [ -n "${2-}" ] && [ $(( $(date +%s) - $2 )) -lt 2 ] && exit 0
          clear_unread "$1" ;;
-  *)     echo "usage: unread.sh list [--short] | next [session] | ack <session>|--all | clear <pane>" >&2
+  *)     echo "usage: unread.sh list [--short] [--except <session>] | next [session] | ack <session>|--all | clear <pane>" >&2
          exit 2 ;;
 esac

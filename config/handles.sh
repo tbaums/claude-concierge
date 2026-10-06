@@ -28,7 +28,8 @@
 #
 #  The Stop hook also marks the turn finished, before anything else and
 #  whatever the index does: it plays the chime and stamps the pane's @unread
-#  option, which config/unread.sh lists and the focus hooks clear. One wired
+#  option (unless the pane is the one being looked at), which config/unread.sh
+#  lists and the focus hooks clear. One wired
 #  hook owns both, so there is no hand-edited second Stop hook to drift.
 #
 #  Env: CONCIERGE_HANDLES=0 turns it off outright (no model call);
@@ -48,10 +49,25 @@ TIMEOUT_MS=4000         # hard budget for the extraction call
 
 # Chime, and flag this pane unread until it is focused or acked. Backgrounded
 # and silenced: neither may hold up or alter the turn.
+#
+# A pane you are looking at as the turn ends is already read: the focus hooks
+# only clear on a focus *transition*, so stamping it would leave it flagged
+# until you clicked away and back. "Looking at" means the active pane of its
+# session's active window, with a focused client on that session — not merely
+# a focused client somewhere on a multi-window session. A tmux without the
+# `focused` client flag reads as unfocused, so it fails toward flagging.
+pane_focused() {         # $1 = pane id
+  local where
+  where="$(tmux display-message -p -t "$1" '#{pane_active}#{window_active} #{session_id}' 2>/dev/null)" || return 1
+  [ "${where%% *}" = 11 ] || return 1
+  tmux list-clients -t "${where#* }" -F '#{client_flags}' 2>/dev/null | grep -q focused
+}
+
 mark_unread() {
   local chime="${CONCIERGE_CHIME-afplay /System/Library/Sounds/Glass.aiff}"
   [ -n "$chime" ] && [ "$chime" != 0 ] && { sh -c "$chime" >/dev/null 2>&1 & }
-  [ -n "${TMUX_PANE:-}" ] && tmux set -p -t "$TMUX_PANE" @unread "$(date +%s)" 2>/dev/null
+  [ -n "${TMUX_PANE:-}" ] && ! pane_focused "$TMUX_PANE" \
+    && tmux set -p -t "$TMUX_PANE" @unread "$(date +%s)" 2>/dev/null
   return 0
 }
 [ "$MODE" = stop ] && mark_unread
