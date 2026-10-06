@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] — 2026-10-05
+
+### Changed
+- **The unread queue is on every session's status bar** (#37), not just the
+  coordinator's: each status bar lists up to 5 other sessions waiting on you
+  (`unread.sh list --except <self>`), so you see what's ready from wherever you are.
+- **A pane that finishes while you're looking at it isn't flagged** (#37): the
+  Stop hook skips the `@unread` stamp when the pane is the active pane of a
+  focused client, so only turns that finish out of view queue up.
+
 ## [0.10.0] — 2026-10-05
 
 ### Added
