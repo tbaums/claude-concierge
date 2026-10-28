@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-28
+
 ### Removed
 - **The status bar's model · effort label** (#45). It went stale when the model
   changed inside a session and misled more than it helped. `status-model.sh`
@@ -21,6 +23,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   backup agent copies each into `extra/<host>/<basename>/`, additive, skipping
   `.git/`, `__pycache__/`, `*.pyc`, `*.jsonl` and `.DS_Store`. Bad entries are
   logged and skipped without failing the run. `install.sh` never touches the list.
+
+### Fixed
+- **A cold start offers restore again** (#39). An empty session-created
+  snapshot no longer overwrites the working-set manifest, so the next cold start
+  still finds your sessions to restore. Stale snapshots get a `--force` hint.
+- **Unknown arguments no longer open an iTerm window** (#40). `concierge
+  version` and `concierge --help` print and exit 0. Any other unknown argument
+  prints usage to stderr, exits 2, and has no side effects.
 
 ## [0.10.1] — 2026-10-05
 
