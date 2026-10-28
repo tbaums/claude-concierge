@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Back up extra directories** (#41): list project directories outside
+  `~/.claude` in `~/.config/claude-concierge/backup-extra` (one per line, `#`
+  comments and `~` allowed; `CONCIERGE_BACKUP_EXTRA` overrides the path) and the
+  backup agent copies each into `extra/<host>/<basename>/`, additive, skipping
+  `.git/`, `__pycache__/`, `*.pyc`, `*.jsonl` and `.DS_Store`. Bad entries are
+  logged and skipped without failing the run. `install.sh` never touches the list.
+
 ## [0.10.1] — 2026-10-05
 
 ### Changed

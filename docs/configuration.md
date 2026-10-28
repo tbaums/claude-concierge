@@ -255,6 +255,18 @@ It renders `~/Library/LaunchAgents/com.tbaums.claude-backup.plist` from
 | `skills/` | `~/.claude/skills/` — shared by every machine, additive |
 | `memory/<host>/` | `~/.claude/projects/<sanitised $HOME>/memory/` (skipped with a log line if absent) |
 | `settings/<host>/settings.json` | `~/.claude/settings.json` |
+| `extra/<host>/<name>/` | each directory listed in `~/.config/claude-concierge/backup-extra` (optional) |
+
+`backup-extra` holds one absolute path per line (`#` comments, blank lines, a
+leading `~` and a trailing slash are allowed); use it for project directories
+outside `~/.claude` that have no other off-machine copy. `<name>` is the
+directory's basename; if two entries share one, the first wins and the other is
+logged and skipped. `.git/`, `__pycache__/`, `*.pyc`, `*.jsonl` and `.DS_Store`
+are skipped. A relative path, a missing directory or an rsync error (a symlink
+loop, say) is logged and skipped without failing the run. There is no size cap:
+what goes in the list is your choice, and all of it is committed and pushed.
+`CONCIERGE_BACKUP_EXTRA` points at a different list file. `install.sh` never
+writes this file, so it survives reinstalls.
 
 `<host>` is `hostname -s`, lowercased. Transcripts (`*.jsonl`) are never
 copied, and nothing is ever deleted from the repo (no `--delete`): a skill
