@@ -29,20 +29,6 @@ Or change the default permanently by editing `MODEL=` in the repo's
 installed `~/.config/claude-concierge/start.sh` — `install.sh` overwrites that
 one on every upgrade, so changes made there are silently lost.
 
-## Effort level
-
-The status header also shows the reasoning **effort level** next to the model
-(e.g. `opus 4.8 · xhigh`). Once the session has taken a turn this is the effort
-that turn actually ran at, re-read live from the transcript. Until then it's the
-launch-time label: the Claude Code `effortLevel` in `~/.claude/settings.json`,
-which you can override per-launch with an env var:
-
-```sh
-CONCIERGE_EFFORT=high concierge --here
-```
-
-If neither is set it shows `default`.
-
 ## Output style (defaults to Concise)
 
 The Concierge is built for dictating and reading on a phone or in a terminal, so
@@ -150,18 +136,12 @@ born with.
 The top-right of the status bar shows, at a glance, what's running:
 
 ```
-cc 0.2.0 · claude 2.1.202   opus 4.8 · xhigh   Tue 3:14 PM
+cc 0.2.0 · claude 2.1.202   Tue 3:14 PM
 ```
 
-— the Concierge version, the Claude Code version, then the active model and
-effort level.
-
-The versions are read fresh each time a window opens or reattaches. The **model
-and effort are live**: every status refresh (5s) `config/status-model.sh` reads
-the model and effort off the most recent turn in the session's own transcript,
-so switching models in-session with `/model` shows up in the header within one
-tick — no reattach, no restart. Before the first turn of a fresh session there's
-nothing to read yet, so the header shows the launch-time model/effort until then.
+— the Concierge version, the Claude Code version and the clock, read fresh
+each time a window opens or reattaches. There is no model label: one per
+session went stale when the model changed in-session, so it was removed.
 
 ## Voice tap-to-send
 
