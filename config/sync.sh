@@ -11,6 +11,7 @@
 #    skills/                             shared, additive (never --delete)
 #    memory/<host>/                      this machine's Claude memory
 #    settings/<host>/settings.json       this machine's ~/.claude/settings.json
+#    extra/<host>/<name>/                each directory listed in backup-extra
 #  <host> = `hostname -s`, lowercased (CONCIERGE_BACKUP_HOST overrides).
 #
 #  rsync -L follows symlinks: a skill that is a symlink into another directory
@@ -84,6 +85,44 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
   mkdir -p "settings/$HOST"
   rsync -aL "$CLAUDE_DIR/settings.json" "settings/$HOST/settings.json" \
     || { log "rsync settings failed (exit $?)"; status=1; }
+fi
+
+# extra/<host>/<name>/ — project directories outside ~/.claude that hold work
+# with no other off-machine copy. One absolute path per line in
+# ~/.config/claude-concierge/backup-extra (# comments, ~ allowed); <name> is
+# the directory's basename, first entry wins. Additive, like skills/. These are
+# optional extras: a bad entry is logged and skipped, and never fails the run
+# or holds back last-ok — the core ~/.claude backup matters more.
+EXTRA_LIST="${CONCIERGE_BACKUP_EXTRA:-$HOME/.config/claude-concierge/backup-extra}"
+if [ -f "$EXTRA_LIST" ]; then
+  seen=""                                   # "name<TAB>path" lines, this run
+  while IFS= read -r line || [ -n "$line" ]; do
+    src="${line%%#*}"
+    src="${src%"${src##*[![:space:]]}"}"; src="${src#"${src%%[![:space:]]*}"}"
+    [ -z "$src" ] && continue
+    case "$src" in
+      '~')   src="$HOME" ;;
+      '~/'*) src="$HOME/${src#'~/'}" ;;
+    esac
+    while [ "$src" != / ] && [ "${src%/}" != "$src" ]; do src="${src%/}"; done
+    case "$src" in
+      /*) ;;
+      *) log "backup-extra: skipping non-absolute path: $line"; continue ;;
+    esac
+    if [ ! -d "$src" ]; then log "backup-extra: not a directory: $src"; continue; fi
+    name="$(basename "$src")"
+    first="$(printf '%s\n' "$seen" | awk -F'\t' -v n="$name" '$1 == n { print $2; exit }')"
+    if [ -n "$first" ]; then
+      log "backup-extra: skipping $src: basename collides with $first"
+      continue
+    fi
+    seen="$seen$name	$src
+"
+    mkdir -p "extra/$HOST/$name"
+    rsync -aL --exclude '*.jsonl' --exclude '.git/' --exclude '__pycache__/' \
+      --exclude '*.pyc' --exclude '.DS_Store' "$src/" "extra/$HOST/$name/" \
+      || log "rsync extra $src failed (exit $?)"
+  done < "$EXTRA_LIST"
 fi
 
 git add -A

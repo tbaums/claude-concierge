@@ -2006,6 +2006,82 @@ lsync
 [[ "$(git -C "$BTMP/legacy" rev-list --count '@{u}..HEAD')" == 0 ]] \
   && ok "sync publishes once the legacy writer is gone" || bad "sync still not publishing"
 
+# backup-extra: directories outside ~/.claude, from an optional list file.
+XCFG="$BHOME/.config/claude-concierge"
+[[ ! -e "$XCFG/backup-extra" ]] && ok "install.sh creates no backup-extra list" \
+  || bad "install.sh created backup-extra"
+printf '# mine\n/some/dir\n' > "$XCFG/backup-extra"; cp "$XCFG/backup-extra" "$BTMP/xlist.before"
+HOME="$BHOME" CONCIERGE_FONT="Menlo 12" CONCIERGE_LAUNCHCTL="$STUB" \
+  CONCIERGE_BACKUP_REPO="$BTMP/backup" bash "$REPO/install.sh" >/dev/null 2>&1
+cmp -s "$XCFG/backup-extra" "$BTMP/xlist.before" \
+  && ok "install.sh leaves an existing backup-extra byte-identical" || bad "install.sh changed backup-extra"
+rm -f "$XCFG/backup-extra"
+
+git init -q "$BTMP/xrepo"
+X="$BTMP/xrepo"
+xsync() { HOME="$BHOME" CONCIERGE_BACKUP_REPO="$X" CONCIERGE_BACKUP_HOST=testhost bash "$SYNC" 2>/dev/null; }
+mkdir -p "$BHOME/proj one" "$BTMP/srcb" "$BTMP/d1/same" "$BTMP/d2/same" "$BTMP/loopy" \
+         "$BTMP/excl/.git" "$BTMP/excl/__pycache__"
+echo a > "$BHOME/proj one/a.txt"; echo b > "$BTMP/srcb/b.txt"
+echo 1 > "$BTMP/d1/same/first.txt"; echo 2 > "$BTMP/d2/same/second.txt"
+echo k > "$BTMP/loopy/keep.txt"; ln -s self "$BTMP/loopy/self"
+echo x > "$BTMP/excl/.git/x"; echo y > "$BTMP/excl/__pycache__/y"
+for f in a.pyc t.jsonl .DS_Store keep.txt; do echo z > "$BTMP/excl/$f"; done
+cat > "$BTMP/xlist" <<EOF
+# project dirs
+
+  ~/proj one
+$BTMP/srcb/
+foo/bar
+~nobody/x
+$BTMP/nope
+$BTMP/d1/same
+$BTMP/d2/same
+$BTMP/excl
+$BTMP/loopy
+EOF
+CONCIERGE_BACKUP_EXTRA="$BTMP/xlist" xsync; rc=$?
+XLOG="$X/logs/sync.log"
+xfiles() { git -C "$X" ls-files "extra/testhost/$1" | sed "s#^extra/testhost/$1/##" | tr '\n' ' '; }
+[[ "$(xfiles 'proj one')" == "a.txt " && "$(xfiles srcb)" == "b.txt " ]] \
+  && ok "backup-extra: comments, blanks, ~ and a trailing slash parse; dirs land in extra/<host>/<name>/" \
+  || bad "backup-extra entries missing: $(git -C "$X" ls-files extra | tr '\n' ' ')"
+grep -q 'backup-extra: skipping non-absolute path: foo/bar$' "$XLOG" \
+  && grep -q 'backup-extra: skipping non-absolute path: ~nobody/x$' "$XLOG" \
+  && [[ ! -e "$X/foo" && ! -e "$X/extra/testhost/bar" && ! -e "$X/extra/testhost/x" ]] \
+  && ok "a relative (or ~user) line is logged and nothing is synced for it" \
+  || bad "relative line handling wrong: $(grep backup-extra "$XLOG")"
+[[ "$(xfiles same)" == "first.txt " ]] \
+  && grep -q "backup-extra: skipping $BTMP/d2/same: basename collides with $BTMP/d1/same" "$XLOG" \
+  && ok "a basename collision: first entry wins, the second is logged and skipped" \
+  || bad "collision wrong: '$(xfiles same)'"
+[[ $rc == 0 ]] && grep -q "backup-extra: not a directory: $BTMP/nope" "$XLOG" \
+  && ok "a missing directory is logged, the rest still sync, exit 0" || bad "missing dir: rc=$rc"
+[[ "$(xfiles excl)" == "keep.txt " ]] \
+  && ok "backup-extra skips .git/, __pycache__/, *.pyc, *.jsonl, .DS_Store" \
+  || bad "excludes leaked: $(xfiles excl)"
+grep -q "rsync extra $BTMP/loopy failed (exit [0-9]*)" "$XLOG" && [[ "$(xfiles loopy)" == *keep.txt* ]] \
+  && [[ $rc == 0 && -f "$X/logs/last-ok" ]] \
+  && ok "an rsync error on one entry is logged; the run still exits 0 and touches last-ok" \
+  || bad "symlink loop: rc=$rc $(grep 'rsync extra' "$XLOG")"
+rm "$BTMP/srcb/b.txt"
+CONCIERGE_BACKUP_EXTRA="$BTMP/xlist" xsync
+[[ "$(xfiles srcb)" == "b.txt " ]] && ok "backup-extra is additive: a file deleted at the source stays" \
+  || bad "a deleted source file was pruned"
+mkdir -p "$BTMP/deflt" "$BTMP/other"; echo d > "$BTMP/deflt/d.txt"; echo o > "$BTMP/other/o.txt"
+echo "$BTMP/deflt" > "$XCFG/backup-extra"; echo "$BTMP/other" > "$BTMP/xlist2"
+CONCIERGE_BACKUP_EXTRA="$BTMP/xlist2" xsync
+[[ "$(xfiles other)" == "o.txt " && -z "$(xfiles deflt)" ]] \
+  && ok "CONCIERGE_BACKUP_EXTRA overrides the default list" || bad "override ignored"
+xsync
+[[ "$(xfiles deflt)" == "d.txt " ]] && ok "the default ~/.config list is read without the override" \
+  || bad "default backup-extra list not read"
+: > "$XCFG/backup-extra"; n="$(git -C "$X" rev-list --count HEAD)"
+xsync && [[ "$(git -C "$X" rev-list --count HEAD)" == "$n" ]] \
+  && ok "an empty backup-extra list is a no-op" || bad "empty list changed something"
+rm -f "$XCFG/backup-extra"
+unset -f xsync xfiles
+
 unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 rm -rf "$BTMP"
 
