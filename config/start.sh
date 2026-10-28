@@ -149,9 +149,20 @@ offer_restore() {
   for name in $(grep '^SESSION|' "$manifest" 2>/dev/null | cut -d'|' -f2); do
     if ! T has-session -t "$name" 2>/dev/null; then absent=$((absent + 1)); fi
   done
-  if [ "$absent" -gt 0 ]; then
-    printf 'concierge: %d session(s) from your last snapshot are not running — `concierge restore` brings them back\n' "$absent"
+  [ "$absent" -gt 0 ] || return 0
+  # restore refuses a manifest past its age limit, so say how to get past it.
+  local stale="" captured then_s age
+  captured="$(sed -n '1s/^#[^0-9]*\([0-9T:-]*Z\).*/\1/p' "$manifest")"
+  if [ -n "$captured" ]; then
+    then_s="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$captured" '+%s' 2>/dev/null || true)"
+    if [ -n "$then_s" ]; then
+      age=$(( ($(date -u '+%s') - then_s) / 3600 ))
+      if [ "$age" -ge "${CONCIERGE_RESTORE_MAX_AGE_HOURS:-72}" ]; then
+        stale=" (snapshot is ${age}h old — use \`concierge restore --force\`)"
+      fi
+    fi
   fi
+  printf 'concierge: %d session(s) from your last snapshot are not running — `concierge restore` brings them back%s\n' "$absent" "$stale"
   return 0
 }
 

@@ -773,6 +773,36 @@ $(diff <(grep -v '^#' "$SNAP/before") <(grep -v '^#' "$MANIFEST"))"
     || ok "the manifest is re-captured on close, without the killed session"
   tmux -L "$HSOCK" kill-server 2>/dev/null
 
+  # ── An empty capture never replaces a set that just isn't running ────────
+  # After a cold start only the coordinator is up; writing that capture would
+  # rotate the real working set out from under `concierge restore`.
+  GSOCK="cc_guard_$$"; GMAN="$SNAP/guardman"
+  gsnap() { ( export CONCIERGE_SOCK="$GSOCK" CONCIERGE_MANIFEST="$GMAN" \
+                     CONCIERGE_RETIRED="$SNAP/guardret"
+              sh "$REPO/config/snapshot.sh" --quiet "$@" 2>&1 ); }
+  tmux -L "$GSOCK" new-session -d -s concierge -c "$SNAP" "$FAKE --chrome"
+  printf '# claude-concierge session manifest — captured 2026-01-01T00:00:00Z\nSESSION|gone|%s||--chrome\n' \
+    "$SNAP/w1" > "$GMAN"
+  cp "$GMAN" "$SNAP/guard.before"
+  gsnap; rc=$?
+  [[ $rc == 0 ]] && cmp -s "$GMAN" "$SNAP/guard.before" && [[ ! -f "$GMAN.1" ]] \
+    && ok "only the coordinator live: an absent working set is left untouched (exit 0)" \
+    || bad "the guard let an empty capture through (rc=$rc, $(grep -c '^SESSION|' "$GMAN") rows)"
+  # A deliberate close of the last session is still recorded.
+  gsnap --retire gone
+  [[ -f "$GMAN.1" ]] && ! grep -q '^SESSION|' "$GMAN" \
+    && ok "--retire of the last session still rewrites the manifest" \
+    || bad "--retire was swallowed by the guard"
+  # Once any Claude session is live, snapshots rotate and rewrite as before.
+  cp "$SNAP/guard.before" "$GMAN"; rm -f "$GMAN".[1-5]
+  tmux -L "$GSOCK" new-session -d -s fresh -c "$SNAP/w2" "$FAKE --chrome"
+  gsnap
+  [[ -f "$GMAN.1" ]] && grep -q '^SESSION|fresh|' "$GMAN" && ! grep -q '^SESSION|gone|' "$GMAN" \
+    && ok "with a Claude session live, the snapshot rotates and rewrites as usual" \
+    || bad "a live capture was not written: $(grep '^SESSION|' "$GMAN")"
+  tmux -L "$GSOCK" kill-server 2>/dev/null
+  unset -f gsnap
+
   ST kill-server 2>/dev/null
   rm -rf "$SNAP"
   unset -f ST snap rows restore_stub snapf qflags
@@ -1022,6 +1052,58 @@ if have tmux; then
   unset -f RT restore sessions cmdline_under claude_line
 else
   bad "tmux not installed (restore test skipped)"
+fi
+
+# 3g') cold start: the working set is offered back, not overwritten -----------
+# The real start.sh and tmux.conf, in a sandbox HOME with its own TMUX_TMPDIR,
+# so `-L concierge` is a throwaway server and never the real one.
+echo "› cold start (restore offer survives the session-created snapshot)"
+if have tmux; then
+  CS="$(cd "$(mktemp -d)" && pwd -P)"
+  CCFG="$CS/home/.config/claude-concierge"
+  mkdir -p "$CS/bin" "$CS/tmp" "$CS/a" "$CS/b" "$CS/home/.claude" "$CCFG"
+  printf '#!/bin/bash\nexec -a "$0${*:+ $*}" cat\n' > "$CS/bin/claude"; chmod +x "$CS/bin/claude"
+  cp "$REPO"/config/*.sh "$REPO/config/tmux.conf" "$CCFG/"; chmod +x "$CCFG"/*.sh
+  CMAN="$CCFG/session-manifest"
+  cman() {  # $1 = captured timestamp
+    printf '# claude-concierge session manifest — captured %s\nSESSION|alpha|%s||--chrome\nSESSION|beta|%s||--chrome\n' \
+      "$1" "$CS/a" "$CS/b" > "$CMAN"
+  }
+  csenv() { env -u TMUX HOME="$CS/home" TMUX_TMPDIR="$CS/tmp" PATH="$CS/bin:$PATH" \
+                CONCIERGE_HELPERS=0 CONCIERGE_HANDLES=0 CONCIERGE_CLAUDE="$CS/bin/claude" \
+                CONCIERGE_RESTORE_READY_TIMEOUT=3 "$@"; }
+  CT() { csenv tmux -L concierge "$@"; }
+  cold() {  # start from nothing, then let the session-created hook run out
+    CT kill-server 2>/dev/null
+    out="$(csenv zsh "$REPO/config/start.sh" 2>&1 </dev/null)"
+    sleep 1
+    for _ in $(seq 1 20); do pgrep -f "$CCFG/snapshot.sh" >/dev/null || break; sleep 0.25; done
+  }
+
+  cman "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"; cp "$CMAN" "$CS/before"
+  cold
+  [[ "$out" == *"2 session(s) from your last snapshot are not running"* ]] \
+    && ok "a cold start offers the working set back (count 2)" || bad "no restore offer on cold start ('$out')"
+  [[ "$out" != *"--force"* ]] && ok "a fresh snapshot's offer does not mention --force" \
+    || bad "a fresh snapshot was called stale ('$out')"
+  cmp -s "$CMAN" "$CS/before" && [[ ! -f "$CMAN.1" ]] \
+    && ok "the session-created snapshot left the manifest byte-identical, no rotation" \
+    || bad "the manifest was overwritten on cold start ($(grep -c '^SESSION|' "$CMAN") rows)"
+  csenv sh "$REPO/config/restore.sh" >/dev/null 2>&1
+  CT has-session -t alpha 2>/dev/null && CT has-session -t beta 2>/dev/null \
+    && ok "concierge restore brings both sessions back after a cold start" \
+    || bad "restore after cold start: $(CT list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')"
+
+  # A snapshot past restore's age limit: the offer says how to get past it.
+  cman "2020-01-01T00:00:00Z"; rm -f "$CMAN".[1-5]
+  cold
+  [[ "$out" == *"2 session(s)"*"h old — use \`concierge restore --force\`"* ]] \
+    && ok "a stale snapshot's offer points at --force" || bad "stale offer lacks --force ('$out')"
+  CT kill-server 2>/dev/null
+  rm -rf "$CS"
+  unset -f cman csenv CT cold
+else
+  bad "tmux not installed (cold start test skipped)"
 fi
 
 # 3h) handles: short names for the parts of a reply --------------------------
