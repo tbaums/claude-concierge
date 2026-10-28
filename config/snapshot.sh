@@ -204,8 +204,6 @@ rotate() {
   done
   cp "$MANIFEST" "$MANIFEST.1" 2>/dev/null || true
 }
-rotate
-
 tmp="$MANIFEST.$$"
 
 {
@@ -213,6 +211,27 @@ tmp="$MANIFEST.$$"
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   emit_rows
 } > "$tmp" || { rm -f "$tmp"; exit 1; }
+
+# A cold start (reboot, kill-server) creates the coordinator, whose
+# session-created hook lands here with nothing live yet. Writing that capture
+# would rotate the real working set out of the way before `concierge restore`
+# could read it. So an empty capture never replaces a manifest whose sessions
+# are all absent — unless a session was deliberately closed (--retire), which
+# is how closing the last one gets recorded.
+live_any() {                        # is any SESSION in the manifest running?
+  local name
+  for name in $(grep '^SESSION|' "$MANIFEST" 2>/dev/null | cut -d'|' -f2); do
+    T has-session -t "$name" 2>/dev/null && return 0
+  done
+  return 1
+}
+if [ -z "$RETIRE" ] && ! grep -q '^SESSION|' "$tmp" \
+   && grep -q '^SESSION|' "$MANIFEST" 2>/dev/null && ! live_any; then
+  rm -f "$tmp"
+  exit 0
+fi
+
+rotate
 
 mv "$tmp" "$MANIFEST" || { rm -f "$tmp"; exit 1; }
 
