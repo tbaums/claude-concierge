@@ -20,9 +20,11 @@ FONT="${CONCIERGE_FONT:-MonaspaceNeonNF-Regular 15}"
 
 echo "→ Installing config to $CFG"
 mkdir -p "$CFG"
-cp "$REPO_DIR"/config/{tmux.conf,start.sh,clip.sh,logsink.sh,session-menu.sh,status-model.sh,model-label.sh,snapshot.sh,restore.sh,handles.sh,unread.sh,sync.sh,backup.sh} "$CFG/"
+cp "$REPO_DIR"/config/{tmux.conf,start.sh,clip.sh,logsink.sh,session-menu.sh,snapshot.sh,restore.sh,handles.sh,unread.sh,sync.sh,backup.sh} "$CFG/"
 cp "$REPO_DIR/VERSION" "$CFG/VERSION"
-chmod +x "$CFG"/{start.sh,clip.sh,logsink.sh,session-menu.sh,status-model.sh,snapshot.sh,restore.sh,handles.sh,unread.sh,sync.sh,backup.sh}
+# The status-bar model label is gone (#45); don't leave its scripts behind.
+rm -f "$CFG/status-model.sh" "$CFG/model-label.sh"
+chmod +x "$CFG"/{start.sh,clip.sh,logsink.sh,session-menu.sh,snapshot.sh,restore.sh,handles.sh,unread.sh,sync.sh,backup.sh}
 
 echo "→ Installing launcher to $BIN/concierge"
 mkdir -p "$BIN"

@@ -26,46 +26,17 @@ PROJ="$HOME/.claude/projects/$(printf '%s' "$WORKDIR" | sed 's#[/.]#-#g')"
 
 T() { tmux -L "$SOCK" "$@"; }
 
-# pretty_model() — shared with config/status-model.sh, which formats the same
-# ids live on every status-bar tick. Installed alongside us; fall back to our
-# own directory when running straight out of a checkout.
-LIB="$CFG/model-label.sh"
-[ -f "$LIB" ] || LIB="${0:A:h}/model-label.sh"
-. "$LIB"
-
-# The effort level the running session uses: CONCIERGE_EFFORT wins, else the
-# Claude Code `effortLevel` setting, else a neutral label.
-resolve_effort() {
-  if [ -n "$CONCIERGE_EFFORT" ]; then
-    printf '%s' "$CONCIERGE_EFFORT"
-    return
-  fi
-  local e
-  e="$(grep -oE '"effortLevel"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        "$HOME/.claude/settings.json" 2>/dev/null | head -1 \
-        | sed -E 's/.*"([^"]*)"$/\1/')"
-  printf '%s' "${e:-default}"
-}
-
 # Version info for the status-bar header — read fresh on every window open
 # (cheap: one `cat` + one `claude --version` call, not per status-bar tick)
 # and cached as tmux user options; tmux.conf's status-right reads the versions
 # via #{@concierge_version} / #{@claude_version}. Refreshed on reattach too, so
 # an upgrade since the last window open shows up without killing the session.
-#
-# @concierge_model / @concierge_effort are seeded here too, but they're no
-# longer what the header displays: status-model.sh reads the live model/effort
-# off the transcript every tick and only falls back to these when there's no
-# assistant turn to read yet. Seeding them is what makes a fresh launch show
-# the launch-time label instead of a blank segment.
 set_version_opts() {
   local cc_version claude_version
   cc_version="$(cat "$CFG/VERSION" 2>/dev/null || echo '?')"
   claude_version="$("$CLAUDE" --version 2>/dev/null | awk '{print $1}')"
   T set-option -t "$SESSION" @concierge_version "$cc_version"
   T set-option -t "$SESSION" @claude_version "${claude_version:-?}"
-  T set-option -t "$SESSION" @concierge_model "$(pretty_model "$MODEL")"
-  T set-option -t "$SESSION" @concierge_effort "$(resolve_effort)"
 }
 
 # Helper sessions — the static utility sessions you want back after a reboot

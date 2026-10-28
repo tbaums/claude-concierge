@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+- **The status bar's model · effort label** (#45). It went stale when the model
+  changed inside a session and misled more than it helped. `status-model.sh`
+  and `model-label.sh` are gone, and `install.sh` deletes installed copies. The
+  periodic snapshot backstop they ran stays, as a silent `#()` job on
+  `status-right` (`snapshot.sh --quiet --throttle`, still
+  `CONCIERGE_SNAPSHOT_THROTTLE`, default 600s).
+
 ### Added
 - **Back up extra directories** (#41): list project directories outside
   `~/.claude` in `~/.config/claude-concierge/backup-extra` (one per line, `#`
