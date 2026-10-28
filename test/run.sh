@@ -19,6 +19,21 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 echo "Claude Concierge — local tests"
 echo "repo: $REPO"
 
+# CONCIERGE_TEST_ONLY=unread runs just that section (for soak-testing a flaky
+# one): the lines from its header comment to the next section's, then the
+# summary.
+if [[ -n "${CONCIERGE_TEST_ONLY:-}" ]]; then
+  case "$CONCIERGE_TEST_ONLY" in
+    unread) from='^# 3i) unread queue'; to='^# 4) logsink' ;;
+    *) echo "CONCIERGE_TEST_ONLY: unknown section '$CONCIERGE_TEST_ONLY' (known: unread)" >&2; exit 2 ;;
+  esac
+  eval "$(awk -v f="$from" -v t="$to" '$0 ~ f {on=1} $0 ~ t {on=0} on' "${BASH_SOURCE[0]}")"
+  echo; echo "──────────────────────────────"
+  printf 'PASS %d   FAIL %d\n' "$PASS" "$FAIL"
+  [[ "$FAIL" -eq 0 ]] || exit 1
+  exit 0
+fi
+
 # 1) Required files present -------------------------------------------------
 echo "› files"
 for f in LICENSE README.md RELEASING.md CHANGELOG.md install.sh VERSION \
@@ -1313,11 +1328,22 @@ PY
   # The operator's terminal: a real client on the coordinator.
   upty concierge /dev/null &
   UCLIENT=$!
-  sleep 2.5      # past the just-attached grace, for every client above
+  # Wait until $1 clients are attached and every one is past unread.sh's
+  # just-attached grace (focus from a client under 2s old is ignored).
+  ugrace() { local i=0 now
+    while [ $i -lt 100 ]; do
+      now="$(date +%s)"
+      [ "$(UT list-clients -F '#{client_created}' 2>/dev/null \
+           | awk -v now="$now" 'now - $1 >= 2 { n++ } END { print n + 0 }')" -ge "$1" ] && return 0
+      sleep 0.1; i=$((i + 1))
+    done; return 1; }
+  ugrace 3       # the operator and both tile clients
   USPATH="$(UT display -p '#{socket_path}')"
   UCOORD="$(UT display -p -t concierge '#{pane_id}')"
   UCNAME="$(UT list-clients -t concierge -F '#{client_name}' | head -1)"
-  usess() { UT display -p -c "$UCNAME" '#{client_session}'; }
+  # The operator client's session. Read it off list-clients: `display -c`
+  # picks where to display, not which client #{client_session} describes.
+  usess() { UT list-clients -F '#{client_name} #{client_session}' | awk -v c="$UCNAME" '$1 == c { print $2 }'; }
 
   # Empty queue: a message, not an error; the status segment renders nothing.
   out="$(UC unread)"; rc=$?
@@ -1352,7 +1378,10 @@ PY
   # 3) Tiles on screen are not read. The operator looks at the grid; focus
   #    settles on the alpha tile, which clears alpha — beta, visible beside
   #    it, stays unread. A fresh Stop on beta stays unread while unfocused.
-  UT switch-client -t grid
+  #    Every switch-client names the operator's client: the tiles are clients
+  #    too, and an untargeted switch-client can move one of them instead
+  #    (#42: it moved the beta tile onto grid, so beta could never be focused).
+  UT switch-client -c "$UCNAME" -t grid
   UT select-pane -t grid.right; UT select-pane -t grid.left
   UT set -p -t beta @unread "$(( $(date +%s) - 400 ))"
   uwait alpha clear && ok "focusing a dash tile clears that pane" || bad "focused tile kept @unread"
@@ -1365,7 +1394,7 @@ PY
   uwait beta clear && ok "focusing the tile's pane (click) clears @unread" || bad "click did not clear"
 
   # 6) next: focus the oldest unread; it drops out of the queue.
-  UT switch-client -t concierge
+  UT switch-client -c "$UCNAME" -t concierge
   UT set -p -t beta @unread "$(( $(date +%s) - 400 ))"
   TMUX="$USPATH,1,0" TMUX_PANE="$UCOORD" CONCIERGE_SOCK="$USOCK" HOME="$UQ/home" \
     zsh "$REPO/bin/concierge" next
@@ -1374,7 +1403,7 @@ PY
   ! ulisted beta && ulisted gamma \
     && ok "after next, concierge unread no longer lists it" || bad "next left it listed: '$(UR list)'"
   # 2) Switching sessions (client-session-changed) clears the landing pane.
-  UT switch-client -t gamma
+  UT switch-client -c "$UCNAME" -t gamma
   uwait gamma clear && ok "switching to a session clears its pane" || bad "session switch did not clear"
   # Outside any client, next names the session instead of failing.
   UT set -p -t alpha @unread 1
@@ -1401,6 +1430,8 @@ PY
     && ok "concierge ack --all clears every pane" || bad "ack --all left: '$(UR list)'"
 
   # Pane closes while unread: the flag goes with it.
+  # The operator is on gamma; take it home first, or killing gamma detaches it.
+  UT switch-client -c "$UCNAME" -t concierge
   UT set -p -t gamma @unread 4; UT kill-session -t gamma
   [[ "$(UC unread)" == "unread queue is empty" ]] \
     && ok "a closed unread pane leaves nothing behind" || bad "closed pane still listed"
@@ -1438,7 +1469,7 @@ PY
   UT new-session -d -s echo 'sleep 120'
   upty delta "$UQ/delta.tty" &
   UCLIENT2=$!
-  sleep 2.5
+  ugrace 4
   UDELTA="$(UT display -p -t delta '#{pane_id}')"
   UT list-clients -t delta -F '#{client_flags}' | grep -q focused \
     && ok "a second real client is attached to delta, focused" || bad "no focused client on delta"
@@ -1480,7 +1511,7 @@ PY
   kill "$UCLIENT" 2>/dev/null; wait "$UCLIENT" 2>/dev/null
   UT kill-server 2>/dev/null
   rm -rf "$UQ"
-  unset -f UT UR UC uwait ulisted upty
+  unset -f UT UR UC uwait ulisted upty ugrace
 else
   bad "tmux not installed (unread queue untested)"
 fi
