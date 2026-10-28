@@ -25,12 +25,61 @@
 #    next      jump to the oldest unread session (prints its name when run
 #              outside a tmux client).
 #    ack <session> | --all   mark read without focusing.
+#    version   print the installed version (version, --version, -V).
+#    help      print the flags and subcommands (help, --help, -h).
+#
+#  Anything else is an error (exit 2) and opens no window.
 #
 #  By default the concierge resumes your previous conversation, so a crash or
 #  reboot picks up exactly where you left off.
 # ───────────────────────────────────────────────────────────────────────────
 
 CFG="$HOME/.config/claude-concierge"
+
+# The header above, in short. Kept in step with it by hand.
+usage() {
+  cat <<'USAGE'
+usage: concierge [--new] [--here] | <subcommand> … | help
+
+Flags (open the concierge window):
+  --new        start a brand-new conversation instead of resuming the last one
+  --here       launch in the current terminal window (no new iTerm window)
+
+Subcommands (run here, never open a window):
+  snapshot     capture the live socket to ~/.config/claude-concierge/session-manifest
+  restore      bring that working set back (--list, --dry-run, --force, names, --dash)
+  backup status  health of the ~/.claude skills/memory/settings backup
+  unread       sessions whose Claude turn finished and you haven't focused since
+  next         jump to the oldest unread session
+  ack <session> | --all   mark read without focusing
+  version      print the installed version
+  help         print this help
+USAGE
+}
+
+case "${1-}" in
+  version|--version|-V)
+    if [[ -r "$CFG/VERSION" ]]; then
+      cat "$CFG/VERSION"; exit 0
+    fi
+    print -u2 "concierge: version unknown (no $CFG/VERSION)"; exit 1 ;;
+  help|--help|-h)
+    usage; exit 0 ;;
+esac
+
+# Window mode is only ever no args, or nothing but --new / --here. Anything
+# else is a mistake — say so before any side effect, rather than open a window.
+case "${1-}" in
+  snapshot|restore|backup|unread|next|ack) ;;
+  *)
+    for arg in "$@"; do
+      if [[ "$arg" != "--new" && "$arg" != "--here" ]]; then
+        print -u2 -r -- "concierge: unknown command '$arg'"
+        print -u2 -r -- "usage: concierge [--new] [--here] | <subcommand> … | help"
+        exit 2
+      fi
+    done ;;
+esac
 
 # Subcommands run in this terminal and never open a window.
 if [[ "${1-}" == "snapshot" ]]; then

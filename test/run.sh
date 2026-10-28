@@ -1106,6 +1106,78 @@ else
   bad "tmux not installed (cold start test skipped)"
 fi
 
+# 3g'') argument validation: only known args may open a window ---------------
+# osascript and start.sh are stubs that record they ran; HOME is a sandbox.
+echo "› concierge args (unknown args never open a window)"
+AV="$(cd "$(mktemp -d)" && pwd -P)"
+AVCFG="$AV/home/.config/claude-concierge"
+mkdir -p "$AV/bin" "$AVCFG"
+printf '#!/bin/sh\necho x >> "%s/osascript.calls"\ncat >/dev/null\n' "$AV" > "$AV/bin/osascript"
+printf '#!/bin/sh\necho x >> "%s/start.calls"\n' "$AV" > "$AVCFG/start.sh"
+printf '#!/bin/sh\necho "restore.sh $*"\n' > "$AVCFG/restore.sh"
+chmod +x "$AV/bin/osascript" "$AVCFG/start.sh" "$AVCFG/restore.sh"
+printf '9.8.7\n' > "$AVCFG/VERSION"
+cc() {  # run bin/concierge; stdout -> $AV/out, stderr -> $AV/err, sets rc
+  rm -f "$AV/osascript.calls" "$AV/start.calls" "$AVCFG/.start-fresh"
+  HOME="$AV/home" PATH="$AV/bin:$PATH" zsh "$REPO/bin/concierge" "$@" >"$AV/out" 2>"$AV/err"; rc=$?
+}
+calls() { [[ -f "$AV/$1.calls" ]] && wc -l < "$AV/$1.calls" | tr -d ' ' || echo 0; }
+
+cc bogus
+[[ $rc == 2 ]] && grep -q "unknown command 'bogus'" "$AV/err" && grep -q 'usage:' "$AV/err" \
+   && [[ "$(calls osascript)" == 0 ]] \
+  && ok "an unknown command exits 2 with usage on stderr, no window" \
+  || bad "concierge bogus: rc=$rc osascript=$(calls osascript) err='$(cat "$AV/err")'"
+cc --new bogus
+[[ $rc == 2 && "$(calls osascript)" == 0 && ! -f "$AVCFG/.start-fresh" ]] \
+  && ok "--new bogus exits 2: no window, no .start-fresh" \
+  || bad "--new bogus: rc=$rc osascript=$(calls osascript) fresh=$([[ -f "$AVCFG/.start-fresh" ]] && echo y)"
+cc --here --bogus
+[[ $rc == 2 && "$(calls start)" == 0 ]] && ok "--here --bogus exits 2 without launching start.sh" \
+  || bad "--here --bogus: rc=$rc start=$(calls start)"
+cc ''
+[[ $rc == 2 && "$(calls osascript)" == 0 ]] && ok "an empty-string argument is unknown (exit 2)" \
+  || bad "concierge '': rc=$rc osascript=$(calls osascript)"
+for a in version --version -V; do
+  cc "$a"
+  [[ $rc == 0 && "$(cat "$AV/out")" == "9.8.7" && "$(calls osascript)" == 0 ]] \
+    && ok "concierge $a prints the installed VERSION" \
+    || bad "concierge $a: rc=$rc out='$(cat "$AV/out")' osascript=$(calls osascript)"
+done
+mv "$AVCFG/VERSION" "$AV/VERSION.bak"
+cc version
+[[ $rc == 1 ]] && grep -q 'version unknown (no .*/VERSION)' "$AV/err" \
+  && ok "a missing VERSION says so and exits 1" || bad "missing VERSION: rc=$rc err='$(cat "$AV/err")'"
+mv "$AV/VERSION.bak" "$AVCFG/VERSION"
+for a in help --help -h; do
+  cc "$a"; miss=""
+  for w in snapshot restore backup unread next ack --new --here; do
+    grep -q -- "$w" "$AV/out" || miss="$miss $w"
+  done
+  [[ $rc == 0 && -z "$miss" && "$(calls osascript)" == 0 ]] \
+    && ok "concierge $a lists every subcommand and flag" \
+    || bad "concierge $a: rc=$rc missing:$miss osascript=$(calls osascript)"
+done
+cc help restore
+[[ $rc == 0 ]] && grep -q 'snapshot' "$AV/out" && ok "help <subcommand> prints the general help" \
+  || bad "help restore: rc=$rc"
+cc
+[[ "$(calls osascript)" == 1 ]] && ok "bare concierge still opens one window" \
+  || bad "bare concierge: osascript=$(calls osascript)"
+cc --new
+[[ "$(calls osascript)" == 1 && -f "$AVCFG/.start-fresh" ]] \
+  && ok "--new opens one window and writes .start-fresh" \
+  || bad "--new: osascript=$(calls osascript) fresh=$([[ -f "$AVCFG/.start-fresh" ]] && echo y)"
+cc --here --new
+[[ $rc == 0 && "$(calls start)" == 1 && "$(calls osascript)" == 0 ]] \
+  && ok "--here --new runs start.sh in place" || bad "--here --new: rc=$rc start=$(calls start)"
+cc restore --list
+[[ "$(cat "$AV/out")" == "restore.sh --list" ]] \
+  && ok "subcommand args pass through untouched (restore --list)" \
+  || bad "restore --list: '$(cat "$AV/out")'"
+rm -rf "$AV"
+unset -f cc calls
+
 # 3h) handles: short names for the parts of a reply --------------------------
 # Everything runs against a stubbed `claude` on PATH and a sandbox state dir —
 # no model is ever called, and the real state directory is never touched.
